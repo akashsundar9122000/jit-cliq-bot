@@ -1,0 +1,6 @@
+# Unix line endings everywhere: Git for Windows would otherwise check sources out with CRLF,
+# and the Deluge sources, build and gate are only proven with LF.
+* text=auto eol=lf
+*.mp4 binary
+*.png binary
+*.jpg binary

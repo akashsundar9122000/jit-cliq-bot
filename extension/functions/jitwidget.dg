@@ -1,0 +1,109 @@
+// JIT Access widget — buttons (function `jitwidget`, type widget_button). target.id is
+// "<action>_<request id>". Every button opens a form; the function that receives the form
+// (jitchange, jitform, jitactive or jitconfirm) re-checks the request, its state and the
+// person's authority from live data, so this handler only decides which form to show.
+// Widget buttons cannot reach the bot's card functions, and the grant step is too large to copy
+// here — the forms route each action to the code that already owns it.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+tid = ifnull(target.get("id"), "").toString();
+parts = tid.toList("_");
+act = "";
+rid = "-";
+if(parts.size() == 2)
+{
+	act = parts.get(0);
+	rid = parts.get(1);
+}
+if(!cfgOk)
+{
+	return {"type":"banner","text":"I can't read my settings right now. Try again in a few minutes.","status":"failure"};
+}
+if(!rid.matches("R[0-9]{12}"))
+{
+	return {"type":"banner","text":"That button is not valid any more. Refresh the widget.","status":"failure"};
+}
+fmt = "EEE dd MMM, hh:mm a";
+// ------------------------------------------------------------------ settings (org admins)
+if(act == "settings")
+{
+	if(user.get("admin") != true)
+	{
+		return {"type":"banner","text":"Only Cliq org admins can change JIT Access settings.","status":"failure"};
+	}
+	hOpts = {{"label":"1 day","value":"24"},{"label":"3 days","value":"72"},{"label":"7 days","value":"168"},{"label":"14 days","value":"336"},{"label":"30 days","value":"720"}};
+	rOpts = {{"label":"Remove at the next sweep","value":"0"},{"label":"1 day","value":"1"},{"label":"3 days","value":"3"},{"label":"7 days","value":"7"},{"label":"30 days","value":"30"}};
+	pOpts = {{"label":"Running","value":"false"},{"label":"Paused — grant nothing new","value":"true"}};
+	aOpts = {{"label":"No change","value":"keep"},{"label":"Send alerts to me too","value":"add"},{"label":"Stop sending alerts to me","value":"remove"}};
+	inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+	inputs.add({"type":"select","name":"paused","label":"State","placeholder":"Choose","mandatory":true,"options":pOpts,"value":cfgPaused.toString()});
+	inputs.add({"type":"select","name":"maxhours","label":"Longest access anyone can get","placeholder":"Choose","mandatory":true,"options":hOpts,"value":cfgMaxHours.toString()});
+	inputs.add({"type":"select","name":"retaindays","label":"Keep finished requests for","placeholder":"Choose","mandatory":true,"options":rOpts,"value":cfgRetainDays.toString()});
+	inputs.add({"type":"select","name":"alerts","label":"Alerts (missed sweeps, pauses)","placeholder":"Choose","mandatory":true,"options":aOpts,"value":"keep"});
+	return {"type":"form","title":"JIT Access settings","name":"jitsettings","hint":"Pausing stops new requests, approvals, grant retries and extensions. Removals carry on. Every change is posted to the audit channel.","button_label":"Save","inputs":inputs,"action":{"type":"invoke.function","name":"jitform"}};
+}
+q = Map();
+q.put("criteria", "(orgid==" + org + ")&&(reqid==" + rid + ")");
+f = zoho.cliq.getRecords("jitrequests", q, "jitaccess");
+if(f.get("status") != "SUCCESS" || f.get("list").size() == 0)
+{
+	return {"type":"banner","text":"I can't find that request. Refresh the widget.","status":"failure"};
+}
+req = f.get("list").get(0);
+rd = ifnull(req.get("data"), "{}").toMap();
+who = rd.get("email") + " → " + rd.get("ch");
+endTxt = ifnull(req.get("expiresat"), "0").toLong().toTime().toString(fmt, tz) + " IST";
+// ------------------------------------------------------------------ approve (with the end chosen here)
+if(act == "approve")
+{
+	dOpts = {{"label":"As requested (until " + endTxt + ")","value":"asked"},{"label":"2 hours","value":"2h"},{"label":"4 hours","value":"4h"},{"label":"8 hours","value":"8h"},{"label":"1 day","value":"1d"},{"label":"3 days","value":"3d"},{"label":"7 days","value":"7d"},{"label":"Until a date and time I choose","value":"custom"}};
+	inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+	inputs.add({"type":"hidden","name":"reqid","value":rid});
+	inputs.add({"type":"select","name":"duration","label":"Access for","placeholder":"Choose","mandatory":true,"options":dOpts,"value":"asked"});
+	inputs.add({"type":"datetime","name":"until","label":"Custom end (only if chosen above)","placeholder":"Pick a date and time","mandatory":false});
+	inputs.add({"type":"textarea","name":"note","label":"Note to the requester (optional)","placeholder":"e.g. Two hours should cover the incident","mandatory":false,"max_length":"150"});
+	return {"type":"form","title":"Approve access","name":"jitchange","hint":who + ". Reason: " + rd.get("reason") + ". Approving adds them to the channel now.","button_label":"Approve","inputs":inputs,"action":{"type":"invoke.function","name":"jitchange"}};
+}
+if(act == "reject")
+{
+	inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+	inputs.add({"type":"hidden","name":"reqid","value":rid});
+	inputs.add({"type":"textarea","name":"note","label":"Reason (shown to the requester)","placeholder":"e.g. Please ask the on-call lead instead","mandatory":false,"max_length":"150"});
+	return {"type":"form","title":"Reject request","name":"jitreject","hint":who,"button_label":"Reject","inputs":inputs,"action":{"type":"invoke.function","name":"jitform"}};
+}
+if(act == "extend")
+{
+	exOpts = {{"label":"2 more hours","value":"2"},{"label":"4 more hours","value":"4"},{"label":"8 more hours","value":"8"},{"label":"1 more day","value":"24"},{"label":"3 more days","value":"72"},{"label":"7 more days","value":"168"}};
+	inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+	inputs.add({"type":"hidden","name":"reqid","value":rid});
+	inputs.add({"type":"select","name":"more","label":"How much longer?","placeholder":"Choose","mandatory":true,"options":exOpts,"value":"4"});
+	inputs.add({"type":"textarea","name":"note","label":"Why?","placeholder":"e.g. The incident is still open","mandatory":true,"min_length":"5","max_length":"200"});
+	return {"type":"form","title":"Request more time","name":"jitextend","hint":"Access to " + rd.get("ch") + " ends " + endTxt + ". An admin of the channel has to approve the new end.","button_label":"Ask for approval","inputs":inputs,"action":{"type":"invoke.function","name":"jitactive"}};
+}
+if(act == "review")
+{
+	inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+	inputs.add({"type":"hidden","name":"reqid","value":rid});
+	inputs.add({"type":"textarea","name":"note","label":"Reason","placeholder":"e.g. Removal blocked while the channel is archived","mandatory":true,"min_length":"5","max_length":"150"});
+	return {"type":"form","title":"Mark for manual review","name":"jitmanual","hint":"I'll stop retrying the removal of " + who + ". Remove them by hand if they are still a member, then mark it resolved.","button_label":"Mark for review","inputs":inputs,"action":{"type":"invoke.function","name":"jitactive"}};
+}
+// ------------------------------------------------------------------ confirmations (lib/liveact.dg)
+titles = {"end":"End access now","cancel":"Cancel request","rkretry":"Retry removal","resolve":"Mark resolved","extok":"Approve extension","extno":"Reject extension"};
+if(!titles.containKey(act))
+{
+	return {"type":"banner","text":"That button is not valid any more. Refresh the widget.","status":"failure"};
+}
+hints = {"end":"End access to " + rd.get("ch") + " for " + rd.get("email") + " now. They are removed from the channel straight away.","cancel":"Withdraw your request for " + rd.get("ch") + ".","rkretry":"Try again to remove " + who + ".","resolve":"Close the review of " + who + ". I check that they are no longer a member first.","extok":"Extend " + who + " from " + endTxt + " to " + ifnull(rd.get("extto"), "0").toLong().toTime().toString(fmt, tz) + " IST.","extno":"Keep the end of " + who + " at " + endTxt + "."};
+inputs = list();
+	inputs.add({"type":"hidden","name":"origin","value":"widget"});
+inputs.add({"type":"hidden","name":"reqid","value":rid});
+inputs.add({"type":"hidden","name":"act","value":act});
+inputs.add({"type":"textarea","name":"note","label":"Note (optional, for the audit trail)","placeholder":"Optional","mandatory":false,"max_length":"150"});
+return {"type":"form","title":titles.get(act),"name":"jitlive","hint":hints.get(act),"button_label":titles.get(act),"inputs":inputs,"action":{"type":"invoke.function","name":"jitconfirm"}};

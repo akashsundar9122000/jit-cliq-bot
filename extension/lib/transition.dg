@@ -1,0 +1,53 @@
+// ---- lib/transition.dg: move a request to a new state, checked twice.
+// in:  tId (datastore record id), tFrom (expected current state), tTo, tSet (Map of other
+//      fields to write in the same update)          uses: nowMs, lib/state.dg
+// out: tOk, tErr, tRec (the record as stored after the update, or as found on failure)
+// The current state is re-read immediately before writing and must still be tFrom; the
+// transition must be legal. Callers hold a lock for the decision, so this re-read is the
+// second line of defence against acting on a stale card or a replayed click.
+tOk = false;
+tErr = "";
+tRec = Map();
+tRead = zoho.cliq.getRecordById("jitrequests", tId, "jitaccess");
+if(tRead.get("status") != "SUCCESS")
+{
+	tErr = "read_failed:" + ifnull(tRead.get("code"), "");
+}
+else
+{
+	tRec = tRead.get("object");
+	sFrom = tRec.get("status");
+	sTo = tTo;
+	// @include lib/state.dg
+	if(sFrom != tFrom)
+	{
+		tErr = "stale:" + sFrom;
+	}
+	else if(!sLegal)
+	{
+		tErr = "illegal:" + sFrom + "->" + tTo;
+	}
+	else
+	{
+		tVals = Map();
+		for each tK in tSet.keys()
+		{
+			tVals.put(tK, tSet.get(tK));
+		}
+		// No "updatedat": jitrequests has no such field (and is at its five-number cap), and
+		// one unknown key fails the whole update with platform_storage_column_not_exists.
+		// The platform's own modified_time records when the state changed.
+		tVals.put("status", tTo);
+		tUpd = zoho.cliq.updateRecord("jitrequests", tId, tVals, "jitaccess");
+		if(tUpd.get("status") == "SUCCESS")
+		{
+			tOk = true;
+			tRec = tUpd.get("object");
+		}
+		else
+		{
+			tErr = "write_failed:" + ifnull(tUpd.get("code"), "");
+		}
+	}
+}
+// ---- end lib/transition.dg

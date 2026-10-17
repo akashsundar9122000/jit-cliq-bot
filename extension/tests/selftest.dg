@@ -1,0 +1,247 @@
+// Self-test for the pure library snippets, run in the real Deluge runtime on the
+// jitspike harness (scripts/selftest.mjs). Prints PASS/FAIL lines and a summary.
+// @include lib/config.dg
+fails = List();
+passes = 0;
+// ---------- parse ----------
+pcases = List();
+pcases.add({"in":"https://cliq.zoho.in/channels/jitsandbox","kind":"channel_name","value":"jitsandbox"});
+pcases.add({"in":"please https://cliq.zoho.in/company/60083388416/channels/OpsRoom thanks","kind":"channel_name","value":"opsroom"});
+pcases.add({"in":"https://cliq.zoho.in/company/60083388416/chats/CT_1796053731714727937_60083388416","kind":"channel_chat","value":"CT_1796053731714727937_60083388416"});
+pcases.add({"in":"#jitsandbox","kind":"channel_name","value":"jitsandbox"});
+pcases.add({"in":"https://cliq.zoho.in/channels/jitsandbox?x=1#frag","kind":"channel_name","value":"jitsandbox"});
+pcases.add({"in":"http://cliq.zoho.in/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://cliq.zoho.in.evil.com/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://evil.com@cliq.zoho.in/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://cliq.zoho.in:8443/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://cliq.zoho.com/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://10.0.0.1/channels/jitsandbox","kind":"unsupported","value":""});
+pcases.add({"in":"https://cliq.zoho.in/company/60083388416/chats/1291580160950884244","kind":"unsupported","value":""});
+pcases.add({"in":"https://bit.ly/abc123","kind":"unsupported","value":""});
+pcases.add({"in":"https://workdrive.zoho.in/folder/abc123","kind":"unsupported","value":""});
+pcases.add({"in":"https://writer.zoho.in.evil.com/writer/open/x","kind":"unsupported","value":""});
+pcases.add({"in":"https://cliq.zoho.in/channels/../admin","kind":"unsupported","value":""});
+pcases.add({"in":"hello there","kind":"none","value":""});
+pcases.add({"in":"","kind":"none","value":""});
+for each pc in pcases
+{
+	pInput = pc.get("in");
+	// @include lib/parse.dg
+	if(pKind == pc.get("kind") && pValue == pc.get("value"))
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("parse '" + pc.get("in") + "' → " + pKind + "/" + pValue + " (want " + pc.get("kind") + "/" + pc.get("value") + ")");
+	}
+}
+// ---------- duration ----------
+// 2026-10-17 13:30 IST, which is a UTC top-of-hour. Rounding epoch ms to whole hours would
+// keep it here, but the sweep fires at IST HH:00, so a correct expiry must land on IST :00.
+base = 1792224000000;
+dcases = List();
+dcases.add({"choice":"2h","custom":0,"max":720,"err":false});
+dcases.add({"choice":"30d","custom":0,"max":720,"err":false});
+dcases.add({"choice":"31d","custom":0,"max":720,"err":true});
+pastMs = base - 1000;
+laterMs = base + 5400000;
+dcases.add({"choice":"custom","custom":pastMs,"max":720,"err":true});
+dcases.add({"choice":"custom","custom":laterMs,"max":720,"err":false});
+dcases.add({"choice":"banana","custom":0,"max":720,"err":true});
+for each dc in dcases
+{
+	dChoice = dc.get("choice");
+	dCustomMs = dc.get("custom");
+	dNow = base;
+	dMaxHours = dc.get("max");
+	// @include lib/duration.dg
+	// Deluge cannot parse a comparison of a parenthesised boolean, `(a != b) == c`.
+	gotErr = false;
+	if(dError != "")
+	{
+		gotErr = true;
+	}
+	ok = false;
+	if(gotErr == dc.get("err"))
+	{
+		ok = true;
+	}
+	if(ok && dError == "")
+	{
+		// Must land on an IST top-of-hour and after now.
+		istMin = dExpires.toTime().toString("mm", tz);
+		if(istMin != "00" || dExpires <= dNow)
+		{
+			ok = false;
+		}
+	}
+	if(ok)
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("duration " + dc.toString() + " → expires " + dExpires + " (" + dExpires.toTime().toString("dd MMM HH:mm", tz) + " IST) err '" + dError + "'");
+	}
+}
+// ---------- state ----------
+scases = List();
+scases.add({"from":"PENDING_APPROVAL","to":"APPROVED_PENDING_GRANT","ok":true});
+scases.add({"from":"PENDING_APPROVAL","to":"ACTIVE","ok":false});
+scases.add({"from":"REJECTED","to":"APPROVED_PENDING_GRANT","ok":false});
+scases.add({"from":"APPROVED_PENDING_GRANT","to":"ACTIVE","ok":true});
+scases.add({"from":"ACTIVE","to":"EXTENSION_PENDING","ok":true});
+scases.add({"from":"EXTENSION_PENDING","to":"ACTIVE","ok":true});
+scases.add({"from":"EXTENSION_PENDING","to":"REVOCATION_IN_PROGRESS","ok":true});
+scases.add({"from":"REVOCATION_IN_PROGRESS","to":"EXPIRED_REVOKED","ok":true});
+scases.add({"from":"EXPIRED_REVOKED","to":"ACTIVE","ok":false});
+scases.add({"from":"CANCELLED","to":"ACTIVE","ok":false});
+scases.add({"from":"NOPE","to":"ACTIVE","ok":false});
+scases.add({"from":"APPROVED_PENDING_GRANT","to":"NOT_NEEDED","ok":true});
+scases.add({"from":"NOT_NEEDED","to":"ACTIVE","ok":false});
+scases.add({"from":"GRANT_FAILED","to":"APPROVED_PENDING_GRANT","ok":true});
+scases.add({"from":"ACTIVE","to":"REVOKED_EARLY","ok":false});
+scases.add({"from":"REVOCATION_IN_PROGRESS","to":"REVOKED_EARLY","ok":true});
+for each sc in scases
+{
+	sFrom = sc.get("from");
+	sTo = sc.get("to");
+	// @include lib/state.dg
+	if(sLegal == sc.get("ok"))
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("state " + sFrom + " → " + sTo + " legal=" + sLegal);
+	}
+}
+// ---------- clean ----------
+// Text a requester typed must not add lines or formatting to an approver's card.
+ccases = List();
+ccases.add({"in":"INC-142 *Until:* 2 hours","want":"INC-142 Until: 2 hours"});
+ccases.add({"in":"line one\nline two","want":"line one line two"});
+ccases.add({"in":"[click](https://evil.example) `x` _y_ ~z~ <b>","want":"click(https://evil.example) x y z b"});
+for each cc in ccases
+{
+	clIn = cc.get("in");
+	// @include lib/clean.dg
+	if(clOut == cc.get("want"))
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("clean '" + cc.get("in") + "' → '" + clOut + "' (want '" + cc.get("want") + "')");
+	}
+}
+// ---------- reminder time ----------
+// base is 13:30 IST. Sweeps fire at IST HH:00, so a reminder must land on an IST hour.
+rcases = List();
+rcases.add({"exp":base + 16200000,"want":base + 5400000,"why":"4.5 h left: half-way 15:45, floored to 15:00"});
+rcases.add({"exp":base + 261000000,"want":base + 174600000,"why":"3 days left: 24 h before, already on the hour"});
+rcases.add({"exp":base + 1800000,"want":base + 1800000,"why":"30 min left: no separate reminder"});
+for each rc in rcases
+{
+	raExp = rc.get("exp");
+	raNow = base;
+	// @include lib/remindat.dg
+	if(raAt == rc.get("want"))
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("remindat " + rc.get("why") + ": got " + raAt.toTime().toString("dd HH:mm", tz) + " want " + rc.get("want").toTime().toString("dd HH:mm", tz));
+	}
+}
+// ---------- lock, against the live datastore ----------
+// One winner per key, a second claim loses, and unlock frees the key for a fresh claim.
+lkKey = "selftest:lock:" + nowMs;
+lkReq = "selftest";
+// @include lib/lock.dg
+lk1 = lkOk;
+// @include lib/lock.dg
+lk2 = lkOk;
+lk2t = lkTaken;
+ulKey = lkKey;
+// @include lib/unlock.dg
+// @include lib/lock.dg
+lk3 = lkOk;
+// @include lib/unlock.dg
+if(lk1 && !lk2 && lk2t && lk3)
+{
+	passes = passes + 1;
+}
+else
+{
+	fails.add("lock first=" + lk1 + " second=" + lk2 + "/taken=" + lk2t + " after unlock=" + lk3 + " " + lkErr);
+}
+// ---------- transition, against the live datastore ----------
+// A throwaway request is moved through lib/transition.dg, so a write the store rejects (an
+// unknown field fails the whole update) shows up here rather than on an approver's click.
+stQ = Map();
+stQ.put("criteria", "(orgid==selftest)&&(reqid==R000000000000)");
+stOld = zoho.cliq.getRecords("jitrequests", stQ, "jitaccess");
+if(stOld.get("status") == "SUCCESS")
+{
+	stOldList = stOld.get("list");
+	for each stO in stOldList
+	{
+		zoho.cliq.deleteRecord("jitrequests", stO.get("id"), "jitaccess");
+	}
+}
+stNew = zoho.cliq.createRecord("jitrequests", {"reqid":"R000000000000","orgid":"selftest","status":"PENDING_APPROVAL","requesterid":"0","reskey":"selftest","expiresat":nowMs,"nextactionat":nowMs,"createdat":nowMs,"data":"{}"}, "jitaccess");
+if(stNew.get("status") != "SUCCESS")
+{
+	fails.add("transition setup: " + ifnull(stNew.get("code"), "error"));
+}
+else
+{
+	tId = stNew.get("object").get("id");
+	tFrom = "PENDING_APPROVAL";
+	tTo = "APPROVED_PENDING_GRANT";
+	tSet = Map();
+	tSet.put("data", "{}");
+	tSet.put("expiresat", nowMs + hourMs);
+	// @include lib/transition.dg
+	if(tOk && tRec.get("status") == "APPROVED_PENDING_GRANT")
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("transition write: " + tErr);
+	}
+	// The same move again must be refused as stale: the card someone pressed is out of date.
+	tFrom = "PENDING_APPROVAL";
+	tTo = "REJECTED";
+	tSet = Map();
+	// @include lib/transition.dg
+	if(!tOk && tErr.startsWith("stale:"))
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("transition stale: ok=" + tOk + " " + tErr);
+	}
+	// The sweep finds due work with "<=" criteria; prove that operator works on this store.
+	leQ = Map();
+	leQ.put("criteria", "(orgid==selftest)&&(nextactionat<=" + (nowMs + 1000) + ")");
+	leF = zoho.cliq.getRecords("jitrequests", leQ, "jitaccess");
+	leQ2 = Map();
+	leQ2.put("criteria", "(orgid==selftest)&&(nextactionat<=" + (nowMs - 86400000) + ")");
+	leF2 = zoho.cliq.getRecords("jitrequests", leQ2, "jitaccess");
+	if(leF.get("status") == "SUCCESS" && leF.get("list").size() == 1 && leF2.get("status") == "SUCCESS" && leF2.get("list").size() == 0)
+	{
+		passes = passes + 1;
+	}
+	else
+	{
+		fails.add("criteria <=: " + leF.get("status") + "/" + ifnull(leF.get("list"), List()).size() + ", past " + leF2.get("status") + "/" + ifnull(leF2.get("list"), List()).size());
+	}
+	zoho.cliq.deleteRecord("jitrequests", tId, "jitaccess");
+}
+return {"text":"SELFTEST passes=" + passes + " fails=" + fails.size() + " " + fails.toString()};

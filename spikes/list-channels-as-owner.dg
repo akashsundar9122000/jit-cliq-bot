@@ -1,0 +1,29 @@
+// jit-spike: what does GET /channels return for a user token (needed by enrolment)?
+cl = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==client"}, "jitaccess");
+ow = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==owner"}, "jitaccess");
+t = invokeurl
+[
+	url :"https://accounts.zoho.in/oauth/v2/token"
+	type :POST
+	parameters:{"client_id":cl.get("list").get(0).get("secret"),"client_secret":cl.get("list").get(0).get("secretb"),"grant_type":"refresh_token","refresh_token":ow.get("list").get(0).get("secret")}
+];
+h = {"Authorization":"Zoho-oauthtoken " + t.get("access_token")};
+r = invokeurl
+[
+	url :"https://cliq.zoho.in/api/v2/channels?joined=true&limit=100"
+	type :GET
+	headers:h
+];
+out = List();
+chs = ifnull(r.get("channels"), List());
+for each c in chs
+{
+	out.add(c.get("unique_name") + "|" + c.get("channel_id") + "|" + c.get("chat_id") + "|" + c.get("current_user_role") + "|" + c.get("level"));
+}
+w = invokeurl
+[
+	url :"https://accounts.zoho.in/oauth/user/info"
+	type :GET
+	headers:h
+];
+return {"text":"keys=" + r.keys() + " n=" + chs.size() + " " + out.toString() + " | userinfo keys=" + w.keys() + " zuid=" + w.get("ZUID")};

@@ -1,0 +1,194 @@
+// JIT Access Bot — button handler (function `jitaction`). Every card button posts here with
+// arguments.key = "<action>|<request id>". The key only says what was pressed; who pressed it
+// comes from the platform's `user` map, and whether they may is decided from live data.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+key = ifnull(arguments.get("key"), "");
+parts = key.toList("|");
+act = "";
+rid = "-";
+if(parts.size() == 2)
+{
+	act = parts.get(0);
+	rid = parts.get(1);
+}
+if(!cfgOk)
+{
+	return {"text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+if(act == "connect" || act == "connectdone")
+{
+	cnMode = if(act == "connect", "start", "finish");
+	cnUser = uid;
+	cnEmail = email;
+	cnOrg = org;
+	// @include lib/connect.dg
+	if(cnOk && cnMode == "finish")
+	{
+		nTo = "";
+		nMsg = Map();
+		nAudit = "[connect] " + email + " connected their Zoho account";
+		// @include lib/notify.dg
+	}
+	return cnMsg;
+}
+if(act == "request")
+{
+	// The button may be old: re-read the resource rather than trusting what it carries.
+	// Membership and approvers are checked again when the form is submitted.
+	fq = Map();
+	if(!rid.matches("cliqch:P[0-9]{6,25}"))
+	{
+		return {"text":"That button is not valid any more."};
+	}
+	fq.put("criteria", "(orgid==" + org + ")&&(reskey==" + rid + ")");
+	fRes = zoho.cliq.getRecords("jitresources", fq, "jitaccess");
+	if(fRes.get("status") != "SUCCESS" || fRes.get("list").size() == 0)
+	{
+		return {"text":"That channel is no longer set up for temporary access."};
+	}
+	fr = fRes.get("list").get(0);
+	frd = ifnull(fr.get("data"), "{}").toMap();
+	if(frd.get("status") != "active")
+	{
+		return {"text":"Temporary access to " + frd.get("name") + " was switched off by its admins."};
+	}
+	if(cfgPaused)
+	{
+		return {"text":"Temporary access requests are paused by an administrator right now. Please try again later."};
+	}
+	maxH = cfgMaxHours;
+	resMax = ifnull(fr.get("maxhours"), "0").toLong();
+	if(resMax > 0 && resMax < maxH)
+	{
+		maxH = resMax;
+	}
+	// Every visible input carries a placeholder: Cliq rejects a form whose inputs lack one
+	// with a generic 1011 "operation failed" and shows the person nothing.
+	// Offer only durations within the configured maximum.
+	durOpts = List();
+	allDur = {{"label":"2 hours","value":"2h","h":2},{"label":"4 hours","value":"4h","h":4},{"label":"8 hours","value":"8h","h":8},{"label":"1 day","value":"1d","h":24},{"label":"3 days","value":"3d","h":72},{"label":"7 days","value":"7d","h":168},{"label":"14 days","value":"14d","h":336},{"label":"30 days","value":"30d","h":720}};
+	for each o in allDur
+	{
+		if(o.get("h") <= maxH)
+		{
+			durOpts.add({"label":o.get("label"),"value":o.get("value")});
+		}
+	}
+	durOpts.add({"label":"Until a date and time I choose","value":"custom"});
+	return {"type":"form","title":"Request access","name":"jitrequest","hint":"Access to " + frd.get("name") + " starts when an admin approves and ends automatically. End times are rounded up to the next hour.","button_label":"Send for approval","inputs":{{"type":"hidden","name":"reskey","value":fr.get("reskey")},{"type":"select","name":"duration","label":"For how long?","placeholder":"Choose a duration","mandatory":true,"options":durOpts,"value":"4h"},{"type":"datetime","name":"until","label":"Custom end (only if you chose a date above)","placeholder":"Pick a date and time","mandatory":false},{"type":"textarea","name":"reason","label":"Why do you need access?","placeholder":"e.g. Incident INC-142 — need to follow the on-call discussion","mandatory":true,"min_length":"5","max_length":"200"}},"action":{"type":"invoke.function","name":"jitform"}};
+}
+if(!rid.matches("R[0-9]{12}"))
+{
+	return {"text":"That button is not valid any more."};
+}
+if(act == "approve")
+{
+	// Cards sent before Phase 2 still point Approve here; the decision now lives in jitgrant.
+	return {"text":"This card is out of date. Send me *pending* for current requests."};
+}
+// Everything below needs the request itself.
+q = Map();
+q.put("criteria", "(orgid==" + org + ")&&(reqid==" + rid + ")");
+f = zoho.cliq.getRecords("jitrequests", q, "jitaccess");
+if(f.get("status") != "SUCCESS" || f.get("list").size() == 0)
+{
+	return {"text":"I can't find that request."};
+}
+req = f.get("list").get(0);
+rd = ifnull(req.get("data"), "{}").toMap();
+st = req.get("status");
+if(act == "change" || act == "reject" || act == "ask")
+{
+	if(st != "PENDING_APPROVAL")
+	{
+		return {"text":"This request is already *" + ifnull(statusWords.get(st), st) + "*. Nothing to decide."};
+	}
+	// The form only collects input; authority is checked again when it is submitted.
+	if(act == "ask")
+	{
+		return {"type":"form","title":"Ask for details","name":"jitask","hint":rd.get("email") + " → " + rd.get("ch") + ". The request stays open until someone decides it.","button_label":"Send question","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"textarea","name":"note","label":"Your question (sent to the requester)","placeholder":"e.g. Which incident is this for?","mandatory":true,"min_length":"5","max_length":"200"}},"action":{"type":"invoke.function","name":"jitform"}};
+	}
+	if(act == "reject")
+	{
+		return {"type":"form","title":"Reject request","name":"jitreject","hint":rd.get("email") + " → " + rd.get("ch"),"button_label":"Reject","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"textarea","name":"note","label":"Reason (shown to the requester)","placeholder":"e.g. Please ask the on-call lead instead","mandatory":false,"max_length":"150"}},"action":{"type":"invoke.function","name":"jitform"}};
+	}
+	opts = {{"label":"2 hours","value":"2h"},{"label":"4 hours","value":"4h"},{"label":"8 hours","value":"8h"},{"label":"1 day","value":"1d"},{"label":"3 days","value":"3d"},{"label":"7 days","value":"7d"},{"label":"Until a date and time I choose","value":"custom"}};
+	return {"type":"form","title":"Approve with a different end","name":"jitchange","hint":rd.get("email") + " asked for " + rd.get("dur") + " in " + rd.get("ch") + ". The new end time is counted from now and rounded up to the hour.","button_label":"Approve","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"select","name":"duration","label":"Access for","placeholder":"Choose a duration","mandatory":true,"options":opts,"value":"2h"},{"type":"datetime","name":"until","label":"Custom end (only if chosen above)","placeholder":"Pick a date and time","mandatory":false},{"type":"textarea","name":"note","label":"Note to the requester (optional)","placeholder":"e.g. Two hours should cover the incident","mandatory":false,"max_length":"150"}},"action":{"type":"invoke.function","name":"jitchange"}};
+}
+if(act == "reply")
+{
+	if(req.get("requesterid") != uid)
+	{
+		return {"text":"Only the person who asked can answer this."};
+	}
+	if(st != "PENDING_APPROVAL")
+	{
+		return {"text":"This request is already *" + ifnull(statusWords.get(st), st) + "*, so no answer is needed."};
+	}
+	return {"type":"form","title":"Answer the admin","name":"jitreply","hint":"Your answer goes to the admins of " + rd.get("ch") + ".","button_label":"Send answer","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"textarea","name":"note","label":"Your answer","placeholder":"e.g. INC-142, the payments outage","mandatory":true,"min_length":"2","max_length":"200"}},"action":{"type":"invoke.function","name":"jitform"}};
+}
+if(act == "extend")
+{
+	if(req.get("requesterid") != uid)
+	{
+		return {"text":"Only the person with the access can ask for more time."};
+	}
+	if(st != "ACTIVE")
+	{
+		return {"text":"This access is *" + ifnull(statusWords.get(st), st) + "*, so it can't be extended now."};
+	}
+	exEnd = ifnull(req.get("expiresat"), "0").toLong().toTime().toString("EEE dd MMM, hh:mm a", tz);
+	exOpts = {{"label":"2 more hours","value":"2"},{"label":"4 more hours","value":"4"},{"label":"8 more hours","value":"8"},{"label":"1 more day","value":"24"},{"label":"3 more days","value":"72"},{"label":"7 more days","value":"168"}};
+	return {"type":"form","title":"Request more time","name":"jitextend","hint":"Access to " + rd.get("ch") + " ends " + exEnd + " IST. An admin of the channel has to approve the new end.","button_label":"Ask for approval","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"select","name":"more","label":"How much longer?","placeholder":"Choose","mandatory":true,"options":exOpts,"value":"4"},{"type":"textarea","name":"note","label":"Why?","placeholder":"e.g. The incident is still open","mandatory":true,"min_length":"5","max_length":"200"}},"action":{"type":"invoke.function","name":"jitactive"}};
+}
+if(act == "manual")
+{
+	if(st != "REVOCATION_FAILED")
+	{
+		return {"text":"This request is *" + ifnull(statusWords.get(st), st) + "*, so it can't be marked for review."};
+	}
+	// The form only collects the reason; the admin check happens when it is submitted.
+	return {"type":"form","title":"Mark for manual review","name":"jitmanual","hint":"I'll stop retrying the removal of " + rd.get("email") + " from " + rd.get("ch") + ". Remove them by hand if they are still a member, then mark the request resolved.","button_label":"Mark for review","inputs":{{"type":"hidden","name":"reqid","value":rid},{"type":"textarea","name":"note","label":"Reason","placeholder":"e.g. Removal blocked while the channel is archived","mandatory":true,"min_length":"5","max_length":"150"}},"action":{"type":"invoke.function","name":"jitactive"}};
+}
+if(act == "cancel")
+{
+	if(req.get("requesterid") != uid)
+	{
+		return {"text":"Only the person who asked can cancel this request."};
+	}
+	if(st != "PENDING_APPROVAL")
+	{
+		return {"text":"This request is already *" + ifnull(statusWords.get(st), st) + "*, so it can't be cancelled."};
+	}
+	lkKey = "decide:" + rid;
+	lkReq = rid;
+	// @include lib/lock.dg
+	if(!lkOk)
+	{
+		return {"text":"An admin decided this request a moment ago, so it can't be cancelled."};
+	}
+	tId = req.get("id");
+	tFrom = "PENDING_APPROVAL";
+	tTo = "CANCELLED";
+	tSet = Map();
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		// Nothing changed, so release the decision lock rather than strand the request.
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		return {"text":"I couldn't cancel it (" + tErr + ")."};
+	}
+	ulKey = "open:" + req.get("reskey") + ":" + uid;
+	// @include lib/unlock.dg
+	nTo = ifnull(rd.get("approvers"), "");
+	nMsg = {"text":"Request `" + rid + "` (" + email + " → " + rd.get("ch") + ") was cancelled by the requester. No action needed."};
+	nAudit = "[cancelled] " + rid + " " + rd.get("ch") + " by requester " + email;
+	// @include lib/notify.dg
+	return {"text":"Cancelled. Your request for " + rd.get("ch") + " is withdrawn."};
+}
+return {"text":"That button is not valid any more."};

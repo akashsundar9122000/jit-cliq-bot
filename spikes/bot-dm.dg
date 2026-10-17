@@ -1,0 +1,4 @@
+// jit-spike: can the production bot DM a user who never subscribed to it?
+m = {"text":"JIT spike: test DM from JIT Access Bot (safe to ignore).","userids":"60084023939"};
+r = zoho.cliq.postToBot("jitaccessbot", m, "jitaccess");
+return {"text":"postToBot result: " + r.toString()};

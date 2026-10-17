@@ -1,0 +1,101 @@
+// ---- lib/parse.dg: find the first channel reference in free text.
+// in:  pInput (text)            uses: allowedHosts
+// out: pKind  "channel_name" | "channel_chat" | "unsupported" | "none"
+//      pValue unique name or chat id;  pOrg org id from the link ("" if absent);  pReason
+// Never fetches the URL: links are matched against fixed shapes only, so a pasted
+// address can never make the bot call a host it did not choose.
+pKind = "none";
+pValue = "";
+pOrg = "";
+pReason = "";
+// `for each` only accepts a variable, not a chained expression.
+pTokens = ifnull(pInput, "").trim().toList(" ");
+for each pTok in pTokens
+{
+	pT = pTok.trim();
+	if(pKind == "none" && pT.startsWith("#") && pT.length() > 1)
+	{
+		pName = pT.subString(1).toLowerCase();
+		if(pName.matches("[a-z0-9]{1,100}"))
+		{
+			pKind = "channel_name";
+			pValue = pName;
+		}
+	}
+	else if(pKind == "none" && pT.toLowerCase().startsWith("http"))
+	{
+		if(!pT.toLowerCase().startsWith("https://"))
+		{
+			pKind = "unsupported";
+			pReason = "Only https links are accepted.";
+		}
+		else
+		{
+			pRest = pT.subString(8);
+			pHost = pRest;
+			pPath = "";
+			if(pRest.contains("/"))
+			{
+				pHost = pRest.subString(0, pRest.indexOf("/"));
+				pPath = pRest.subString(pRest.indexOf("/"));
+			}
+			if(pPath.contains("?"))
+			{
+				pPath = pPath.subString(0, pPath.indexOf("?"));
+			}
+			if(pPath.contains("#"))
+			{
+				pPath = pPath.subString(0, pPath.indexOf("#"));
+			}
+			pHost = pHost.toLowerCase();
+			// Credentials (user@host) and ports are refused outright: both are classic
+			// ways to make a link look like it points somewhere it does not.
+			if(pHost.contains("@") || pHost.contains(":") || !allowedHosts.contains(pHost))
+			{
+				pKind = "unsupported";
+				pReason = "That link is not a Zoho Cliq (India) channel link.";
+				// Named so the requester knows it is planned, not broken (WorkDrive sharing is
+				// blocked in this org's plan — see docs/limitations.md). Exact hosts only.
+				if(pHost == "workdrive.zoho.in" || pHost == "writer.zoho.in")
+				{
+					pReason = "WorkDrive and Writer files aren't supported yet — coming soon. For now, ask the file's owner to share it.";
+				}
+			}
+			else
+			{
+				pSeg = pPath.toList("/");
+				pParts = List();
+				for each pS in pSeg
+				{
+					if(pS != "")
+					{
+						pParts.add(pS);
+					}
+				}
+				if(pParts.size() == 2 && pParts.get(0) == "channels" && pParts.get(1).toLowerCase().matches("[a-z0-9]{1,100}"))
+				{
+					pKind = "channel_name";
+					pValue = pParts.get(1).toLowerCase();
+				}
+				else if(pParts.size() == 4 && pParts.get(0) == "company" && pParts.get(1).matches("[0-9]{1,30}") && pParts.get(2) == "channels" && pParts.get(3).toLowerCase().matches("[a-z0-9]{1,100}"))
+				{
+					pKind = "channel_name";
+					pOrg = pParts.get(1);
+					pValue = pParts.get(3).toLowerCase();
+				}
+				else if(pParts.size() == 4 && pParts.get(0) == "company" && pParts.get(1).matches("[0-9]{1,30}") && pParts.get(2) == "chats" && pParts.get(3).matches("CT_[0-9]{5,40}_[0-9]{5,30}"))
+				{
+					pKind = "channel_chat";
+					pOrg = pParts.get(1);
+					pValue = pParts.get(3);
+				}
+				else
+				{
+					pKind = "unsupported";
+					pReason = "That Cliq link does not point to a channel.";
+				}
+			}
+		}
+	}
+}
+// ---- end lib/parse.dg

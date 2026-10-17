@@ -1,0 +1,225 @@
+{
+  "_comment": "Cliq datastores for the JIT Access Bot. Platform limits (verified): field unique_names are letters only; per datastore at most 5 limited-text, 5 number, 5 boolean, 3 encrypted-text and 1 large-text field. Columns are reserved for values that are queried; everything else lives in the JSON `data` column (max 1,000 chars). The Free/Standard plan allows 1,000 records per org, so terminal requests and their locks are pruned after the audit channel has the full story.",
+  "datastores": [
+    {
+      "unique_name": "jitrequests",
+      "name": "jitrequests",
+      "description": "One record per access request and its grant. Queried fields are columns; requester email, approver ids, decider and notes are in data (JSON).",
+      "fields": [
+        {
+          "unique_name": "reqid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "orgid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "status",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "requesterid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "reskey",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "expiresat",
+          "type": "number"
+        },
+        {
+          "unique_name": "nextactionat",
+          "type": "number"
+        },
+        {
+          "unique_name": "expiryversion",
+          "type": "number"
+        },
+        {
+          "unique_name": "attempts",
+          "type": "number"
+        },
+        {
+          "unique_name": "createdat",
+          "type": "number"
+        },
+        {
+          "unique_name": "createdbybot",
+          "type": "boolean"
+        },
+        {
+          "unique_name": "remindersent",
+          "type": "boolean"
+        },
+        {
+          "unique_name": "data",
+          "type": "large-text"
+        }
+      ],
+      "unique_keys": [
+        [
+          "reqid"
+        ]
+      ]
+    },
+    {
+      "unique_name": "jitresources",
+      "name": "jitresources",
+      "description": "Channels a channel admin enrolled for JIT access. Lookup ids are columns; name, enrolled-by, status and kind are in data (JSON).",
+      "fields": [
+        {
+          "unique_name": "reskey",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "orgid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "channelid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "uniquename",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "chatid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "maxhours",
+          "type": "number"
+        },
+        {
+          "unique_name": "enrolledat",
+          "type": "number"
+        },
+        {
+          "unique_name": "data",
+          "type": "large-text"
+        }
+      ],
+      "unique_keys": [
+        [
+          "reskey"
+        ]
+      ]
+    },
+    {
+      "unique_name": "jitlocks",
+      "name": "jitlocks",
+      "description": "Single-use keys. A duplicate insert is how a second click or overlapping sweep learns it lost.",
+      "fields": [
+        {
+          "unique_name": "lockkey",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "reqid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "createdat",
+          "type": "number"
+        },
+        {
+          "unique_name": "owner",
+          "type": "limited-text"
+        }
+      ],
+      "unique_keys": [
+        [
+          "lockkey"
+        ]
+      ]
+    },
+    {
+      "unique_name": "jitowners",
+      "name": "jitowners",
+      "description": "Each approver's own OAuth grant (device flow), so grant and revoke run as a real channel admin.",
+      "fields": [
+        {
+          "unique_name": "userid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "orgid",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "email",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "status",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "refresh",
+          "type": "encrypted-text"
+        },
+        {
+          "unique_name": "access",
+          "type": "encrypted-text"
+        },
+        {
+          "unique_name": "device",
+          "type": "encrypted-text"
+        },
+        {
+          "unique_name": "accessexp",
+          "type": "number"
+        },
+        {
+          "unique_name": "deviceexp",
+          "type": "number"
+        },
+        {
+          "unique_name": "connectedat",
+          "type": "number"
+        }
+      ],
+      "unique_keys": [
+        [
+          "userid"
+        ]
+      ]
+    },
+    {
+      "unique_name": "jitconfig",
+      "name": "jitconfig",
+      "description": "Settings (max duration, pause, heartbeat) and the OAuth client credentials in encrypted fields.",
+      "fields": [
+        {
+          "unique_name": "ckey",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "cvalue",
+          "type": "limited-text"
+        },
+        {
+          "unique_name": "csecret",
+          "type": "encrypted-text"
+        },
+        {
+          "unique_name": "updatedat",
+          "type": "number"
+        },
+        {
+          "unique_name": "updatedby",
+          "type": "limited-text"
+        }
+      ],
+      "unique_keys": [
+        [
+          "ckey"
+        ]
+      ]
+    }
+  ]
+}

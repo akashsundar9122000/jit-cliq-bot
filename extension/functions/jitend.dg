@@ -1,0 +1,26 @@
+// JIT Access Bot — buttons on live access (function `jitend`): End access now, Retry removal,
+// Mark resolved, and Approve / Reject an extension. arguments.key = "<action>|<request id>".
+// The logic is lib/liveact.dg, shared with the JIT Access widget's forms (function jitactive).
+// End access may be pressed by the requester; everything else needs a current channel admin,
+// checked live. Removals run as a channel admin (an org admin's grant cannot touch a private
+// channel it is not in): the clicking admin, or for the requester the admin who granted it.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+key = ifnull(arguments.get("key"), "");
+parts = key.toList("|");
+act = "";
+rid = "-";
+if(parts.size() == 2)
+{
+	act = parts.get(0);
+	rid = parts.get(1);
+}
+if(!cfgOk)
+{
+	return {"text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+rpWidget = false;
+// @include lib/liveact.dg

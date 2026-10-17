@@ -1,0 +1,21 @@
+// ---- lib/config.dg: deployment constants (India DC). Hosts live here and nowhere else.
+// The connection name must be written as the literal "jitaccess" at every call: Deluge
+// resolves connections when the script is saved and rejects a variable.
+botName = "jitaccessbot";
+cliqApi = "https://cliq.zoho.in/api/v2";
+accountsUrl = "https://accounts.zoho.in";
+auditChannel = "jitaudit";
+allowedHosts = {"cliq.zoho.in"};
+hourMs = 3600000;
+tz = "Asia/Kolkata";
+// IST is UTC+5:30 with no daylight saving. Schedulers fire at IST HH:00, which is UTC HH:30,
+// so expiries are rounded to IST hours using this offset — rounding epoch ms directly would
+// land on UTC hours and leave access in place for up to an hour after it should end.
+tzOffsetMs = 19800000;
+// Device-flow scopes: channel read/update to grant and revoke as the approver, and the
+// profile scope so the bot can prove whose grant it received.
+ownerScopes = "ZohoCliq.Channels.READ,ZohoCliq.Channels.UPDATE,AaaServer.profile.Read";
+adminRoles = {"super_admin","admin"};
+// What people read for each request state; the raw names are for code and the audit trail.
+statusWords = {"PENDING_APPROVAL":"waiting for approval","APPROVED_PENDING_GRANT":"approved","GRANT_FAILED":"approved, but adding you failed","ACTIVE":"active","EXTENSION_PENDING":"active, extension requested","REVOCATION_IN_PROGRESS":"being removed","REVOCATION_FAILED":"removal failed","MANUAL_REVIEW":"with an admin for review","REJECTED":"rejected","CANCELLED":"cancelled","EXPIRED_REVOKED":"ended","REVOKED_EARLY":"ended early","CLOSED_MANUAL":"closed by an admin","NOT_NEEDED":"not needed (already a member)"};
+nowMs = zoho.currenttime.toLong();

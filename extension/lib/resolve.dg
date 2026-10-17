@@ -1,0 +1,48 @@
+// ---- lib/resolve.dg: map a parsed channel reference to an enrolled resource.
+// in:  pKind, pValue, pOrg (from lib/parse.dg), rvOrg (the user's organisation id)   uses: -
+// out: rvFound, rvRes (record map), rvData (its JSON data: name, enrolledby, status, kind), rvErr
+// Only enrolled channels resolve. The bot cannot see a private channel it was not shown,
+// so an unknown link fails closed with an explanation instead of guessing.
+rvFound = false;
+rvRes = Map();
+rvData = Map();
+rvErr = "";
+if(pOrg != "" && pOrg != rvOrg)
+{
+	rvErr = "That link belongs to a different Zoho organisation.";
+}
+else
+{
+	rvQ = Map();
+	if(pKind == "channel_chat")
+	{
+		rvQ.put("criteria", "(orgid==" + rvOrg + ")&&(chatid==" + pValue + ")");
+	}
+	else
+	{
+		rvQ.put("criteria", "(orgid==" + rvOrg + ")&&(uniquename==" + pValue + ")");
+	}
+	rvFind = zoho.cliq.getRecords("jitresources", rvQ, "jitaccess");
+	if(rvFind.get("status") != "SUCCESS")
+	{
+		rvErr = "I could not check that channel just now. Please try again in a minute.";
+	}
+	else if(rvFind.get("list").size() == 0)
+	{
+		rvErr = "That channel is not set up for temporary access yet. Ask one of its admins to message me: *enrol #" + pValue + "*";
+	}
+	else
+	{
+		rvRes = rvFind.get("list").get(0);
+		rvData = ifnull(rvRes.get("data"), "{}").toMap();
+		if(rvData.get("status") != "active")
+		{
+			rvErr = "Temporary access to that channel is switched off by its admins.";
+		}
+		else
+		{
+			rvFound = true;
+		}
+	}
+}
+// ---- end lib/resolve.dg

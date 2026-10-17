@@ -1,0 +1,26 @@
+// ---- lib/chinfo.dg: read a channel as a given person.
+// in:  ciChannel (channel id), ciToken (access token)          uses: cliqApi, adminRoles
+// out: ciOk, ciRole (that person's role), ciIsAdmin, ciName, ciErr
+ciOk = false;
+ciRole = "";
+ciIsAdmin = false;
+ciName = "";
+ciErr = "";
+ciResp = invokeurl
+[
+	url :cliqApi + "/channels/" + ciChannel
+	type :GET
+	headers:{"Authorization":"Zoho-oauthtoken " + ciToken}
+];
+if(ciResp.get("channel_id") != null)
+{
+	ciOk = true;
+	ciRole = ifnull(ciResp.get("current_user_role"), "");
+	ciIsAdmin = adminRoles.contains(ciRole);
+	ciName = ifnull(ciResp.get("name"), "");
+}
+else
+{
+	ciErr = ifnull(ciResp.get("code"), "unreadable");
+}
+// ---- end lib/chinfo.dg

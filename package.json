@@ -1,0 +1,15 @@
+{
+  "name": "jit-access-bot",
+  "private": true,
+  "type": "module",
+  "description": "Temporary, owner-approved access to Zoho Cliq channels, built as native Cliq components (Deluge).",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "gate": "node scripts/gate.mjs",
+    "verify": "node scripts/gate.mjs && node --test tests/*.test.mjs",
+    "selftest": "node scripts/selftest.mjs",
+    "deploy": "node scripts/deploy.mjs"
+  }
+}

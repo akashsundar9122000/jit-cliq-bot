@@ -1,0 +1,195 @@
+// ---- lib/grant.dg: add an approved requester to the channel, prove it, record it, tell people.
+// in:  grReq (request record, APPROVED_PENDING_GRANT), grData (its JSON as a map),
+//      grToken (a current channel admin's access token), grActor / grActorEmail (that admin)
+//      uses: cliqApi, nowMs, tz, lib/lock, lib/members, lib/transition, lib/unlock, lib/notify
+// out: grOutcome ("active" | "not_needed" | "failed" | "busy" | "error"), grMsg (for the clicker)
+// Runs as the approving admin: an org admin's own grant cannot touch a private channel it is
+// not in. Adding a member returns 204 with no body, so the grant counts only once the members
+// list, read back, contains the requester.
+grOutcome = "error";
+grMsg = "";
+grRid = grReq.get("reqid");
+grUser = grReq.get("requesterid");
+grCh = grData.get("ch");
+grAttempts = ifnull(grReq.get("attempts"), "0").toLong();
+grUntil = ifnull(grReq.get("expiresat"), "0").toLong().toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+// One lock per attempt: a double-click adds once, and a Retry after a failure (which bumps
+// attempts) is not blocked by the failed attempt's lock.
+lkKey = "grant:" + grRid + ":" + grAttempts;
+lkReq = grRid;
+// @include lib/lock.dg
+if(lkTaken)
+{
+	grOutcome = "busy";
+	grMsg = "I'm already adding them to " + grCh + ". Nothing more to do.";
+}
+else if(!lkOk)
+{
+	// Not "busy": the lock could not be taken at all (e.g. the datastore is full). Nothing
+	// was added; say so rather than imply someone else is handling it.
+	grOutcome = "error";
+	grMsg = "I couldn't start adding them (" + lkErr + "). Nothing was granted; try again shortly.";
+}
+else
+{
+	grErr = "";
+	grPosted = ifnull(grData.get("grantposted"), "").toString() == "true";
+	mbChannel = grData.get("chid");
+	mbToken = grToken;
+	// @include lib/members.dg
+	if(!mbOk)
+	{
+		grErr = "members_unreadable:" + mbErr;
+	}
+	else if(mbIds.contains(grUser))
+	{
+		// Already in: ours only if an earlier attempt sent the add (its read-back failed).
+		// Otherwise it is access they had anyway, which I must neither record nor remove.
+		grOutcome = if(grPosted, "active", "not_needed");
+	}
+	else
+	{
+		// The record after the grant must fit Cliq's 1,000-character limit, or the write that
+		// follows the add fails and the access is stranded with nothing tracking it. Checked
+		// before the add, with room for grantedby/grantedat (~60 characters).
+		if(grData.toString().length() > 930)
+		{
+			grErr = "record_too_large";
+		}
+	}
+	if(grErr == "" && grOutcome == "error" && mbOk && !mbIds.contains(grUser))
+	{
+		// Recorded before the add, so a retry after an unreadable read-back knows the
+		// membership it then finds is ours to remove at expiry.
+		grData.put("grantposted", true);
+		grMark = zoho.cliq.updateRecord("jitrequests", grReq.get("id"), {"data":grData.toString()}, "jitaccess");
+		if(grMark.get("status") != "SUCCESS")
+		{
+			grErr = "record_failed:" + ifnull(grMark.get("code"), "");
+		}
+		else
+		{
+			grIds = List();
+			grIds.add(grUser);
+			grBody = Map();
+			grBody.put("user_ids", grIds);
+			grAdd = invokeurl
+			[
+				url :cliqApi + "/channels/" + grData.get("chid") + "/members"
+				type :POST
+				parameters:grBody.toString()
+				headers:{"Authorization":"Zoho-oauthtoken " + grToken,"Content-Type":"application/json"}
+				detailed:true
+			];
+			// @include lib/members.dg
+			if(mbOk && mbIds.contains(grUser))
+			{
+				grOutcome = "active";
+			}
+			else
+			{
+				grErr = "not_added:" + ifnull(grAdd.get("responseCode"), "?") + if(mbOk, "", ",readback:" + mbErr);
+				// A readable members list without them proves the add did nothing. Clear the
+				// mark, or a later Retry would claim access they had gained some other way.
+				if(mbOk)
+				{
+					grData.put("grantposted", false);
+				}
+			}
+		}
+	}
+	if(grErr != "")
+	{
+		grOutcome = "failed";
+	}
+	tSet = Map();
+	tTo = "GRANT_FAILED";
+	if(grOutcome == "active")
+	{
+		tTo = "ACTIVE";
+		grData.put("grantedby", grActor);
+		grData.put("grantedat", nowMs);
+		grData.remove("lasterror");
+		tSet.put("createdbybot", true);
+		// The hourly sweep acts when nextactionat passes: first the reminder, then expiry.
+		raExp = ifnull(grReq.get("expiresat"), "0").toLong();
+		raNow = nowMs;
+		// @include lib/remindat.dg
+		tSet.put("nextactionat", raAt);
+	}
+	else if(grOutcome == "not_needed")
+	{
+		tTo = "NOT_NEEDED";
+	}
+	else
+	{
+		grData.put("lasterror", grErr.subString(0, min(60, grErr.length())));
+		tSet.put("attempts", grAttempts + 1);
+	}
+	tSet.put("data", grData.toString());
+	tId = grReq.get("id");
+	tFrom = "APPROVED_PENDING_GRANT";
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		// Release the lock so a retry is possible; grantposted (already stored) tells that
+		// retry whether a membership it finds is ours.
+		grOutcome = "error";
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		grMsg = "I couldn't record the result (" + tErr + "). Check *pending* before trying again.";
+	}
+	else
+	{
+		grEmail = grData.get("email");
+		grEnd = {"label":"End access now","type":"-","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"end|" + grRid}};
+		grOthers = List();
+		grAll = ifnull(grData.get("approvers"), "").toList(",");
+		for each grA in grAll
+		{
+			if(grA != grActor && grA != "")
+			{
+				grOthers.add(grA);
+			}
+		}
+		grToAdmins = grOthers.toString(",");
+		if(grOutcome == "active")
+		{
+			// Every approver, the clicker included, gets a card that stays: it carries the
+			// only End access button an admin has, and the click response vanishes on close.
+			grToAdmins = ifnull(grData.get("approvers"), "");
+			grReqMsg = {"text":"You're in. I added you to *" + grCh + "*; I'll remove you at " + grUntil + ".\nRequest `" + grRid + "`","card":{"title":"Access granted","theme":"modern-inline"},"buttons":{{"label":"Request more time","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"extend|" + grRid}},grEnd}};
+			grAdmMsg = {"text":"I added " + grEmail + " to " + grCh + " until " + grUntil + " (approved by " + grActorEmail + "; confirmed in the members list).\nRequest `" + grRid + "`","buttons":{grEnd}};
+			grAudit = "[granted] " + grRid + " " + grEmail + " → " + grCh + " until " + grUntil + " as " + grActorEmail + " (read back: member)";
+			grMsg = "Added " + grEmail + " to " + grCh + " until " + grUntil + ".";
+		}
+		else if(grOutcome == "not_needed")
+		{
+			ulKey = "open:" + grReq.get("reskey") + ":" + grUser;
+			// @include lib/unlock.dg
+			grReqMsg = {"text":"You were already a member of *" + grCh + "* when your request was approved, so I added nothing and will remove nothing.\nRequest `" + grRid + "`"};
+			grAdmMsg = {"text":grEmail + " was already a member of " + grCh + ", so I added nothing. Request `" + grRid + "` is closed."};
+			grAudit = "[not-needed] " + grRid + " " + grEmail + " was already a member of " + grCh;
+			grMsg = grEmail + " is already a member of " + grCh + ", so I added nothing.";
+		}
+		else
+		{
+			// A failure goes to every approver, the clicker included, as a card that stays
+			// in their chat: the click response is only visible until it is closed.
+			grToAdmins = ifnull(grData.get("approvers"), "");
+			grReqMsg = {"text":"Your request for *" + grCh + "* was approved, but I couldn't add you yet. Its admins have been told.\nRequest `" + grRid + "`"};
+			grAdmMsg = {"text":"I couldn't add " + grEmail + " to *" + grCh + "* (" + grErr + "). Nothing was granted.\nRequest `" + grRid + "`","card":{"title":"Access not granted","theme":"modern-inline"},"buttons":{{"label":"Retry","type":"+","action":{"type":"invoke.function","data":{"name":"jitgrant"}},"arguments":{"key":"retry|" + grRid}},{"label":"Close request","type":"-","action":{"type":"invoke.function","data":{"name":"jitgrant"}},"arguments":{"key":"close|" + grRid}}}};
+			grAudit = "[grant-failed] " + grRid + " " + grEmail + " → " + grCh + " as " + grActorEmail + ": " + grErr;
+			grMsg = "I couldn't add " + grEmail + " (" + grErr + "). Use *Retry* on the card I just sent.";
+		}
+		nTo = grUser;
+		nMsg = grReqMsg;
+		nAudit = grAudit;
+		// @include lib/notify.dg
+		nTo = grToAdmins;
+		nMsg = grAdmMsg;
+		nAudit = "";
+		// @include lib/notify.dg
+	}
+}
+// ---- end lib/grant.dg

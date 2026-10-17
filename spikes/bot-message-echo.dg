@@ -1,0 +1,3 @@
+// jit-spike: does an API-posted message from another user reach this handler?
+info {"from":user.get("email"),"text":message};
+return {"text":"echo from " + user.get("email") + ": " + message};

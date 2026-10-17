@@ -1,0 +1,17 @@
+// ---- lib/state.dg: the legal transitions. Every status change is checked against this.
+// in:  sFrom, sTo     out: sLegal (true/false)
+sMoves = Map();
+sMoves.put("PENDING_APPROVAL", {"REJECTED","CANCELLED","APPROVED_PENDING_GRANT"});
+sMoves.put("APPROVED_PENDING_GRANT", {"ACTIVE","GRANT_FAILED","NOT_NEEDED"});
+sMoves.put("GRANT_FAILED", {"APPROVED_PENDING_GRANT","CANCELLED"});
+sMoves.put("ACTIVE", {"EXTENSION_PENDING","REVOCATION_IN_PROGRESS","MANUAL_REVIEW"});
+sMoves.put("EXTENSION_PENDING", {"ACTIVE","REVOCATION_IN_PROGRESS","MANUAL_REVIEW"});
+sMoves.put("REVOCATION_IN_PROGRESS", {"EXPIRED_REVOKED","REVOKED_EARLY","REVOCATION_FAILED","MANUAL_REVIEW"});
+sMoves.put("REVOCATION_FAILED", {"REVOCATION_IN_PROGRESS","MANUAL_REVIEW"});
+sMoves.put("MANUAL_REVIEW", {"CLOSED_MANUAL"});
+sLegal = false;
+if(sMoves.containKey(sFrom))
+{
+	sLegal = sMoves.get(sFrom).contains(sTo);
+}
+// ---- end lib/state.dg

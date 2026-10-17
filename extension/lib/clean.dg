@@ -1,0 +1,9 @@
+// ---- lib/clean.dg: make text a person typed safe to show to someone else.
+// in:  clIn        out: clOut
+// A requester's reason lands in a card an approver reads, sent in the bot's name. Markdown
+// characters and line breaks would let them add lines of their own ("*Until:* 2 hours", a
+// link) that look like the bot's. Removed, not escaped: Cliq's escaping rules are unproven.
+// In a Deluge string one backslash reaches the regex as is ("[\[\]]" matches brackets); a
+// doubled one matches a literal backslash — the first version of this line did exactly that.
+clOut = ifnull(clIn, "").toString().replaceAll("[\r\n\t]+", " ").replaceAll("[*_`~<>|\[\]]", "").trim();
+// ---- end lib/clean.dg

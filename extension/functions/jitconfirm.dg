@@ -1,0 +1,20 @@
+// JIT Access Bot — the JIT Access widget's confirmation forms (function `jitconfirm`): End
+// access, Cancel, Retry removal, Mark resolved, Approve / Reject an extension. The logic is
+// lib/liveact.dg, the same copy the card buttons use (function jitend); it gets its own
+// function because inlined into jitactive the two would pass the ~40 KB handler limit.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+fv = form.get("values");
+// Forms opened from the JIT Access widget say so; their replies must be banners.
+rpWidget = ifnull(fv.get("origin"), "").toString() == "widget";
+if(!cfgOk)
+{
+	return {"type":"form_error","text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+act = ifnull(fv.get("act"), "").toString();
+rid = ifnull(fv.get("reqid"), "-").toString();
+// lib/liveact.dg refuses any rid that is not R + 12 digits before it is used.
+// @include lib/liveact.dg

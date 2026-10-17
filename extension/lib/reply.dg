@@ -1,0 +1,18 @@
+// ---- lib/reply.dg: shape a reply for where the person is.
+// in:  rpMsg (the reply as a chat message map, e.g. {"text": …}), rpWidget (true when the form
+//      was opened from the JIT Access widget)                 out: rpOut
+// A widget renders what a form returns as its own view: a chat message there shows the
+// "trouble populating data" page, so widget forms get a banner with the same text.
+// Widget replies over ~100 characters are refused with a bare "Something went wrong"
+// (seen at 104 and ~140; 26 and 54 shown), so a long reply is cut, not lost.
+rpOut = rpMsg;
+if(rpWidget)
+{
+	rpText = ifnull(rpMsg.get("text"), "Done.").replaceAll("\*", "");
+	if(rpText.length() > 100)
+	{
+		rpText = rpText.subString(0, 97) + "…";
+	}
+	rpOut = {"type":"banner","text":rpText,"status":"success"};
+}
+// ---- end lib/reply.dg

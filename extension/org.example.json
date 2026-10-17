@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy of the shape scripts/install.mjs writes to extension/org.json (gitignored). Ids are per org.",
+  "bot": {
+    "id": "b-<bot id>"
+  },
+  "schedulers": [
+    "<jitsweepa id, 00:00>",
+    "\u2026",
+    "<jitsweepx id, 23:00>"
+  ],
+  "widget": {
+    "id": "<widget id, created in the Cliq UI>"
+  }
+}

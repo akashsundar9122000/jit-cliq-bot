@@ -1,0 +1,20 @@
+// One-off: seed jitconfig. Copies the OAuth client credentials store-to-store so they
+// never appear in output; reports only which keys were written.
+cl = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==client"}, "jitaccess");
+cid = cl.get("list").get(0).get("secret");
+csec = cl.get("list").get(0).get("secretb");
+rows = List();
+rows.add({"ckey":"clientid","cvalue":"(encrypted)","csecret":cid});
+rows.add({"ckey":"clientsecret","cvalue":"(encrypted)","csecret":csec});
+rows.add({"ckey":"maxhours","cvalue":"720"});
+rows.add({"ckey":"paused","cvalue":"false"});
+rows.add({"ckey":"admins","cvalue":"60082781327"});
+done = List();
+for each r in rows
+{
+	r.put("updatedat", zoho.currenttime.toLong());
+	r.put("updatedby", "seed");
+	w = zoho.cliq.createRecord("jitconfig", r, "jitaccess");
+	done.add(r.get("ckey") + ":" + w.get("status") + ifnull(w.get("code"), ""));
+}
+return {"text":"seeded " + done.toString()};

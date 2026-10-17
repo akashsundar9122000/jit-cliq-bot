@@ -1,0 +1,201 @@
+// JIT Access widget — view. Lists the viewer's access, the requests waiting for them, and
+// (org admins) the settings. Buttons open a form (function jitwidget); every decision is
+// re-checked from live data when that form is submitted, so nothing shown here is trusted.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+tabId = "mine";
+if(target.containKey("id"))
+{
+	tabId = target.get("id");
+}
+fmt = "EEE dd MMM, hh:mm a";
+sections = list();
+sid = 0;
+if(!cfgOk)
+{
+	return {"type":"applet","data_type":"info","info":{"title":"Can't read settings","description":"JIT Access can't read its settings right now. Try again in a few minutes."}};
+}
+// ------------------------------------------------------------------ my access
+if(tabId == "mine")
+{
+	mq = Map();
+	mq.put("criteria", "(orgid==" + org + ")&&(requesterid==" + uid + ")");
+	mq.put("order_by", "-createdat");
+	mq.put("limit", 20);
+	mF = zoho.cliq.getRecords("jitrequests", mq, "jitaccess");
+	if(mF.get("status") != "SUCCESS")
+	{
+		return {"type":"applet","data_type":"info","info":{"title":"Can't read your requests","description":"Try again in a minute."}};
+	}
+	earlier = list();
+	liveStates = {"PENDING_APPROVAL","APPROVED_PENDING_GRANT","GRANT_FAILED","ACTIVE","EXTENSION_PENDING","REVOCATION_IN_PROGRESS","REVOCATION_FAILED","MANUAL_REVIEW"};
+	mList = mF.get("list");
+	for each r in mList
+	{
+		rd = ifnull(r.get("data"), "{}").toMap();
+		st = r.get("status");
+		rid = r.get("reqid");
+		word = ifnull(statusWords.get(st), st);
+		if(liveStates.contains(st) && sid < 18)
+		{
+			sid = sid + 1;
+			els = list();
+			els.add({"type":"title","text":rd.get("ch") + " — " + word});
+			ex = ifnull(r.get("expiresat"), "0").toLong();
+			line = "Until " + ex.toTime().toString(fmt, tz) + " IST · `" + rid + "`";
+			if(st == "EXTENSION_PENDING")
+			{
+				line = line + "\nExtension to " + ifnull(rd.get("extto"), "0").toLong().toTime().toString(fmt, tz) + " IST is waiting for an admin.";
+			}
+			else if(st == "REVOCATION_FAILED" || st == "MANUAL_REVIEW")
+			{
+				line = line + "\nIt should have ended; the channel's admins are on it.";
+			}
+			els.add({"type":"text","text":line});
+			btns = list();
+			if(st == "ACTIVE")
+			{
+				btns.add({"label":"Request more time","type":"invoke.function","name":"jitwidget","id":"extend_" + rid});
+			}
+			if(st == "ACTIVE" || st == "EXTENSION_PENDING")
+			{
+				btns.add({"label":"End access now","type":"invoke.function","name":"jitwidget","id":"end_" + rid});
+			}
+			if(st == "PENDING_APPROVAL")
+			{
+				btns.add({"label":"Cancel request","type":"invoke.function","name":"jitwidget","id":"cancel_" + rid});
+			}
+			if(btns.size() > 0)
+			{
+				els.add({"type":"buttons","buttons":btns});
+			}
+			sections.add({"id":sid,"elements":els});
+		}
+		else if(earlier.size() < 8)
+		{
+			earlier.add(rd.get("ch") + " — " + word + "  `" + rid + "`");
+		}
+	}
+	if(earlier.size() > 0)
+	{
+		sid = sid + 1;
+		sections.add({"id":sid,"elements":{{"type":"title","text":"Earlier"},{"type":"text","text":earlier.toString("\n")}}});
+	}
+	if(sections.size() == 0)
+	{
+		return {"type":"applet","data_type":"info","info":{"title":"No temporary access yet","description":"To ask for access to a channel, paste its link to the JIT Access Bot. An admin of the channel approves, and the access ends on its own."}};
+	}
+	return {"type":"applet","sections":sections};
+}
+// ------------------------------------------------------------------ approvals
+if(tabId == "appr")
+{
+	aStates = {"PENDING_APPROVAL","EXTENSION_PENDING","REVOCATION_FAILED","MANUAL_REVIEW","GRANT_FAILED","APPROVED_PENDING_GRANT"};
+	for each aSt in aStates
+	{
+		aq = Map();
+		aq.put("criteria", "(orgid==" + org + ")&&(status==" + aSt + ")");
+		aq.put("limit", 50);
+		aF = zoho.cliq.getRecords("jitrequests", aq, "jitaccess");
+		if(aF.get("status") == "SUCCESS")
+		{
+			aList = aF.get("list");
+			for each r in aList
+			{
+				rd = ifnull(r.get("data"), "{}").toMap();
+				if(ifnull(rd.get("approvers"), "").toList(",").contains(uid) && sid < 18)
+				{
+					sid = sid + 1;
+					rid = r.get("reqid");
+					ex = ifnull(r.get("expiresat"), "0").toLong().toTime().toString(fmt, tz) + " IST";
+					els = list();
+					btns = list();
+					if(aSt == "PENDING_APPROVAL")
+					{
+						els.add({"type":"title","text":rd.get("email") + " → " + rd.get("ch")});
+						els.add({"type":"text","text":"Until " + ex + "\n*Reason:* " + rd.get("reason") + "\n`" + rid + "`"});
+						btns.add({"label":"Approve","type":"invoke.function","name":"jitwidget","id":"approve_" + rid});
+						btns.add({"label":"Reject","type":"invoke.function","name":"jitwidget","id":"reject_" + rid});
+					}
+					else if(aSt == "EXTENSION_PENDING")
+					{
+						els.add({"type":"title","text":"More time: " + rd.get("email") + " → " + rd.get("ch")});
+						els.add({"type":"text","text":"From " + ex + " to " + ifnull(rd.get("extto"), "0").toLong().toTime().toString(fmt, tz) + " IST\n*Reason:* " + ifnull(rd.get("extwhy"), "") + "\n`" + rid + "`"});
+						btns.add({"label":"Approve extension","type":"invoke.function","name":"jitwidget","id":"extok_" + rid});
+						btns.add({"label":"Reject extension","type":"invoke.function","name":"jitwidget","id":"extno_" + rid});
+					}
+					else if(aSt == "REVOCATION_FAILED")
+					{
+						els.add({"type":"title","text":"Removal failing: " + rd.get("email") + " → " + rd.get("ch")});
+						els.add({"type":"text","text":"Last error: " + ifnull(rd.get("lasterror"), "?") + "\n`" + rid + "`"});
+						btns.add({"label":"Retry removal","type":"invoke.function","name":"jitwidget","id":"rkretry_" + rid});
+						btns.add({"label":"Manual review","type":"invoke.function","name":"jitwidget","id":"review_" + rid});
+					}
+					else if(aSt == "MANUAL_REVIEW")
+					{
+						els.add({"type":"title","text":"Manual review: " + rd.get("email") + " → " + rd.get("ch")});
+						els.add({"type":"text","text":ifnull(rd.get("manualnote"), "") + " (" + ifnull(rd.get("manualby"), "") + ")\n`" + rid + "`"});
+						btns.add({"label":"Mark resolved","type":"invoke.function","name":"jitwidget","id":"resolve_" + rid});
+					}
+					else
+					{
+						// Retrying a grant needs the grant step, which runs from the bot's card.
+						els.add({"type":"title","text":"Approved, not added: " + rd.get("email") + " → " + rd.get("ch")});
+						els.add({"type":"text","text":"Send *pending* to the JIT Access Bot to retry.\n`" + rid + "`"});
+					}
+					if(btns.size() > 0)
+					{
+						els.add({"type":"buttons","buttons":btns});
+					}
+					sections.add({"id":sid,"elements":els});
+				}
+			}
+		}
+	}
+	if(sections.size() == 0)
+	{
+		return {"type":"applet","data_type":"info","info":{"title":"Nothing waiting for you","description":"Requests for channels you administer appear here."}};
+	}
+	return {"type":"applet","sections":sections};
+}
+// ------------------------------------------------------------------ admin
+if(tabId == "admin")
+{
+	if(user.get("admin") != true)
+	{
+		return {"type":"applet","data_type":"info","info":{"title":"Org admins only","description":"Only Cliq org admins can see JIT Access settings."}};
+	}
+	hb = "never";
+	for each cr in cfgRows
+	{
+		if(cr.get("ckey") == "heartbeat" && ifnull(cr.get("cvalue"), "").matches("[0-9]{10,14}"))
+		{
+			hb = cr.get("cvalue").toLong().toTime().toString(fmt, tz) + " IST";
+		}
+	}
+	counts = List();
+	cStates = {"PENDING_APPROVAL","ACTIVE","EXTENSION_PENDING","REVOCATION_FAILED","MANUAL_REVIEW"};
+	for each cSt in cStates
+	{
+		cq = Map();
+		cq.put("criteria", "(orgid==" + org + ")&&(status==" + cSt + ")");
+		cq.put("limit", 100);
+		cF = zoho.cliq.getRecords("jitrequests", cq, "jitaccess");
+		n = "?";
+		if(cF.get("status") == "SUCCESS")
+		{
+			n = cF.get("list").size().toString();
+		}
+		counts.add(ifnull(statusWords.get(cSt), cSt) + ": " + n);
+	}
+	els = list();
+	els.add({"type":"title","text":if(cfgPaused, "PAUSED — no new access is being granted", "Running")});
+	els.add({"type":"text","text":"*Longest access:* " + cfgMaxHours + " hours\n*Finished requests kept:* " + cfgRetainDays + " day(s), then removed from the store (the audit channel keeps the history)\n*Alerts go to:* " + cfgAdmins.size() + " admin(s)\n*Last sweep:* " + hb});
+	els.add({"type":"text","text":counts.toString("\n")});
+	els.add({"type":"buttons","buttons":{{"label":"Change settings","type":"invoke.function","name":"jitwidget","id":"settings_R000000000000"}}});
+	sections.add({"id":1,"elements":els});
+	return {"type":"applet","sections":sections};
+}
+return {"type":"applet","data_type":"info","info":{"title":"Unknown tab","description":"Reopen the widget."}};

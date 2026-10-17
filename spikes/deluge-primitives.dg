@@ -1,0 +1,29 @@
+// jit-spike: confirm the Deluge primitives the shared library depends on.
+out = Map();
+now = zoho.currenttime.toLong();
+out.put("now", now);
+out.put("mod", now % 3600000);
+out.put("div_type", (now / 3600000).toString());
+out.put("div_long", (now / 3600000).toLong());
+// epoch ms -> datetime -> formatted in a named zone
+t = now.toTime();
+out.put("toTime", t.toString());
+out.put("fmt_ist", t.toString("dd MMM yyyy, hh:mm a", "Asia/Kolkata"));
+out.put("fmt_utc", t.toString("yyyy-MM-dd HH:mm", "UTC"));
+// parse a form-style datetime in a zone back to epoch ms
+p = "2026-10-20T18:30".toTime("yyyy-MM-dd'T'HH:mm", "Asia/Kolkata");
+out.put("parsed_ms", p.toLong());
+out.put("parsed_back_utc", p.toString("yyyy-MM-dd HH:mm", "UTC"));
+s = "see https://cliq.zoho.in/company/60083388416/channels/jitsandbox now";
+out.put("tokens", s.toList(" "));
+out.put("matches", "jitsandbox".matches("[a-z0-9]+"));
+out.put("suffix", "https://cliq.zoho.in/company/1/channels/abc".getSuffix("/channels/"));
+out.put("rand", randomNumber(100000, 999999));
+out.put("ifnull", ifnull(null, "dflt"));
+l = {"a","b"};
+out.put("contains", l.contains("b"));
+mm = "{\"a\":1}".toMap();
+out.put("toMap", mm.get("a"));
+out.put("lower", "AbC".toLowerCase());
+out.put("len", "hello".length());
+return {"text":out.toString()};

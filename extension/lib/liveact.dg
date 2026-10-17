@@ -1,0 +1,283 @@
+// ---- lib/liveact.dg: act on one request from a button or a form — End access, Retry removal,
+// Mark resolved, Approve / Reject an extension, Cancel a pending request.
+// in:  act, rid, uid, org, email (the person acting, from the platform's user map)
+//      uses: config, cfg, lib/token, lib/chinfo, lib/members, lib/lock, lib/transition,
+//      lib/unlock, lib/notify, lib/revoke, lib/remindat
+// Ends the handler by returning its reply through lib/reply.dg (in: rpWidget), so the one copy
+// serves both callers: the jitend card button (a chat message) and the jitconfirm widget form
+// (a banner).
+// End and Cancel may come from the requester; everything else needs a current channel admin,
+// checked live.
+acts = {"end","rkretry","resolve","extok","extno","cancel"};
+if(!rid.matches("R[0-9]{12}") || !acts.contains(act))
+{
+	rpMsg = {"text":"That button is not valid any more."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+q = Map();
+q.put("criteria", "(orgid==" + org + ")&&(reqid==" + rid + ")");
+f = zoho.cliq.getRecords("jitrequests", q, "jitaccess");
+if(f.get("status") != "SUCCESS" || f.get("list").size() == 0)
+{
+	rpMsg = {"text":"I can't find that request."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+req = f.get("list").get(0);
+rd = ifnull(req.get("data"), "{}").toMap();
+st = req.get("status");
+stWord = ifnull(statusWords.get(st), st);
+need = {"end":"ACTIVE,EXTENSION_PENDING","rkretry":"REVOCATION_FAILED","resolve":"MANUAL_REVIEW","extok":"EXTENSION_PENDING","extno":"EXTENSION_PENDING","cancel":"PENDING_APPROVAL"};
+if(!need.get(act).toList(",").contains(st))
+{
+	rpMsg = {"text":"This request is already *" + stWord + "*. Nothing to do."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+// ------------------------------------------------------------------ cancel (requester only)
+if(act == "cancel")
+{
+	if(req.get("requesterid") != uid)
+	{
+		rpMsg = {"text":"Only the person who asked can cancel this request."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+	lkKey = "decide:" + rid;
+	lkReq = rid;
+	// @include lib/lock.dg
+	if(!lkOk)
+	{
+		rpMsg = {"text":"An admin decided this request a moment ago, so it can't be cancelled."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+	tId = req.get("id");
+	tFrom = "PENDING_APPROVAL";
+	tTo = "CANCELLED";
+	tSet = Map();
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		rpMsg = {"text":"I couldn't cancel it (" + tErr + ")."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+	ulKey = "open:" + req.get("reskey") + ":" + uid;
+	// @include lib/unlock.dg
+	nTo = ifnull(rd.get("approvers"), "");
+	nMsg = {"text":"Request `" + rid + "` (" + email + " → " + rd.get("ch") + ") was cancelled by the requester. No action needed."};
+	nAudit = "[cancelled] " + rid + " " + rd.get("ch") + " by requester " + email;
+	// @include lib/notify.dg
+	rpMsg = {"text":"Cancelled. Your request for " + rd.get("ch") + " is withdrawn."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+// An emergency pause stops access from growing; removals carry on.
+if((act == "extok" || act == "extno") && req.get("requesterid") == uid)
+{
+	rpMsg = {"text":"You can't decide your own extension. Another admin of " + rd.get("ch") + " has to."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+if(act == "extok" && cfgPaused)
+{
+	rpMsg = {"text":"Paused by an administrator: no access is being granted or extended right now. Removals continue as normal."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+isRequester = req.get("requesterid") == uid && act == "end";
+candidates = List();
+if(isRequester)
+{
+	candidates.add(ifnull(rd.get("grantedby"), ""));
+	more = ifnull(rd.get("approvers"), "").toList(",");
+	candidates.addAll(more);
+}
+else
+{
+	candidates.add(uid);
+}
+tkAccess = "";
+for each cand in candidates
+{
+	if(tkAccess == "" && cand != "")
+	{
+		tkUser = cand;
+		// @include lib/token.dg
+	}
+}
+if(tkAccess == "")
+{
+	if(isRequester)
+	{
+		rpMsg = {"text":"I can't end it right now: none of " + rd.get("ch") + "'s admins has a working connection to me. Ask one of them to remove you, or to send me *connect*."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+	rpMsg = {"text":"Before you can do this, I need to be able to add and remove members as you (one-time). Press *Connect*, then press this button again.","buttons":{{"label":"Connect","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"connect|-"}}}};
+	// @include lib/reply.dg
+	return rpOut;
+}
+if(!isRequester)
+{
+	ciChannel = rd.get("chid");
+	ciToken = tkAccess;
+	// @include lib/chinfo.dg
+	if(!ciIsAdmin)
+	{
+		nTo = "";
+		nMsg = Map();
+		nAudit = "[denied] " + email + " tried to " + act + " " + rid + " for " + rd.get("ch") + " but is not a channel admin (role: " + ifnull(ciRole, ciErr) + ")";
+		// @include lib/notify.dg
+		rpMsg = {"text":"Only " + if(act == "end", "the person with the access, or ", "") + "an admin of " + rd.get("ch") + " can do this. I checked just now and you are not one."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+}
+// ------------------------------------------------------------------ removal
+if(act == "end" || act == "rkretry")
+{
+	rkReq = req;
+	rkData = rd;
+	rkToken = tkAccess;
+	rkButtons = true;
+	ex = ifnull(req.get("expiresat"), "0").toLong();
+	rkFinal = "REVOKED_EARLY";
+	// The same reason goes to the requester and to the admins, so it names the person.
+	rkWhy = "ended early by " + email;
+	if(act == "rkretry")
+	{
+		rkFinal = if(ex <= nowMs, "EXPIRED_REVOKED", "REVOKED_EARLY");
+		rkWhy = if(ex <= nowMs, "it expired", "it was ended early") + "; retried by " + email;
+	}
+	// @include lib/revoke.dg
+	if(isRequester && rkOutcome == "removed")
+	{
+		rkMsg = "Done. Your access to " + rd.get("ch") + " has ended.";
+	}
+	rpMsg = {"text":rkMsg};
+	// @include lib/reply.dg
+	return rpOut;
+}
+// ------------------------------------------------------------------ resolve needs proof
+// Closing a review while they are still in the channel would leave access nobody tracks.
+if(act == "resolve" && ifnull(req.get("createdbybot"), "").toString() == "true")
+{
+	mbChannel = rd.get("chid");
+	mbToken = tkAccess;
+	// @include lib/members.dg
+	if(!mbOk)
+	{
+		rpMsg = {"text":"I can't read " + rd.get("ch") + "'s members right now (" + mbErr + "), so I can't confirm it's resolved. Try again in a minute."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+	if(mbIds.contains(req.get("requesterid")))
+	{
+		rpMsg = {"text":rd.get("email") + " is still a member of " + rd.get("ch") + ". Remove them from the channel first, then press *Mark resolved* again."};
+		// @include lib/reply.dg
+		return rpOut;
+	}
+}
+// ------------------------------------------------------------------ decisions that change state
+// One lock per decision and expiry version: a double-click, or two admins at once, act once.
+lkKey = act.subString(0, 3) + ":" + rid + ":" + ifnull(req.get("expiryversion"), "1");
+lkReq = rid;
+// @include lib/lock.dg
+if(!lkOk)
+{
+	rpMsg = {"text":"Someone acted on this a moment ago. Nothing changed."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+tId = req.get("id");
+tFrom = st;
+tSet = Map();
+ev = ifnull(req.get("expiryversion"), "1").toLong();
+oldEnd = ifnull(req.get("expiresat"), "0").toLong();
+newEnd = ifnull(rd.get("extto"), "0").toLong();
+if(act == "resolve")
+{
+	tTo = "CLOSED_MANUAL";
+	rd.put("resolvedby", email);
+}
+else
+{
+	tTo = "ACTIVE";
+	rd.remove("extto");
+	rd.put("extdecider", email);
+	if(act == "extok")
+	{
+		tSet.put("expiresat", newEnd);
+		tSet.put("expiryversion", ev + 1);
+		// A new end needs a new reminder; the version bump also gives it a fresh lock.
+		tSet.put("remindersent", false);
+		raExp = newEnd;
+		raNow = nowMs;
+		// @include lib/remindat.dg
+		tSet.put("nextactionat", raAt);
+	}
+}
+tSet.put("data", rd.toString());
+// @include lib/transition.dg
+if(!tOk)
+{
+	ulKey = lkKey;
+	// @include lib/unlock.dg
+	rpMsg = {"text":"I couldn't record that (" + tErr + "). Nothing changed."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+others = List();
+allA = ifnull(rd.get("approvers"), "").toList(",");
+for each aId in allA
+{
+	if(aId != uid && aId != "")
+	{
+		others.add(aId);
+	}
+}
+fmt = "EEE dd MMM, hh:mm a";
+if(act == "resolve")
+{
+	ulKey = "open:" + req.get("reskey") + ":" + req.get("requesterid");
+	// @include lib/unlock.dg
+	nTo = others.toString(",");
+	nMsg = {"text":"Request `" + rid + "` (" + rd.get("email") + " → " + rd.get("ch") + ") was marked resolved by " + email + "."};
+	nAudit = "[resolved] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + " closed after manual review by " + email;
+	// @include lib/notify.dg
+	rpMsg = {"text":"Marked resolved. I've stopped tracking this access."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+if(act == "extok")
+{
+	until = newEnd.toTime().toString(fmt, tz) + " IST";
+	reqText = "Your extension for *" + rd.get("ch") + "* was *approved* by " + email + ". Access now ends " + until + ".";
+	admText = "Extension for " + rd.get("email") + " in " + rd.get("ch") + " approved by " + email + ": now ends " + until + ".";
+	nAudit = "[extended] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + " from " + oldEnd.toTime().toString(fmt, tz) + " to " + until + " by " + email;
+	clicker = "Extended. Access now ends " + until + ".";
+}
+else
+{
+	until = oldEnd.toTime().toString(fmt, tz) + " IST";
+	reqText = "Your extension for *" + rd.get("ch") + "* was *not approved* by " + email + ". Access still ends " + until + ".";
+	admText = "Extension for " + rd.get("email") + " in " + rd.get("ch") + " rejected by " + email + "; access still ends " + until + ".";
+	nAudit = "[extension-rejected] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + " by " + email;
+	clicker = "Rejected. Access still ends " + until + ".";
+}
+nTo = req.get("requesterid");
+nMsg = {"text":reqText + "\nRequest `" + rid + "`"};
+// @include lib/notify.dg
+nTo = others.toString(",");
+nMsg = {"text":admText + "\nRequest `" + rid + "`"};
+nAudit = "";
+// @include lib/notify.dg
+rpMsg = {"text":clicker};
+// @include lib/reply.dg
+return rpOut;
+// ---- end lib/liveact.dg

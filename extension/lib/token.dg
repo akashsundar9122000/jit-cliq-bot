@@ -1,0 +1,52 @@
+// ---- lib/token.dg: an access token for a person who connected the bot (device flow).
+// in:  tkUser (Cliq user id)        uses: nowMs, accountsUrl, cfgClientId, cfgClientSecret
+// out: tkAccess ("" if unavailable), tkErr ("not_connected" | "refresh_failed:<code>" | "")
+// The access token is cached (encrypted) until a minute before expiry: Zoho's accounts
+// server throttles rapid refreshes, and a throttled refresh looks exactly like a revoked one.
+tkAccess = "";
+tkErr = "";
+tkQ = Map();
+tkQ.put("criteria", "userid==" + tkUser);
+tkFind = zoho.cliq.getRecords("jitowners", tkQ, "jitaccess");
+if(tkFind.get("status") != "SUCCESS" || tkFind.get("list").size() == 0)
+{
+	tkErr = "not_connected";
+}
+else
+{
+	tkRow = tkFind.get("list").get(0);
+	if(tkRow.get("status") != "connected")
+	{
+		tkErr = "not_connected";
+	}
+	else if(ifnull(tkRow.get("access"), "") != "" && ifnull(tkRow.get("accessexp"), "0").toLong() > nowMs + 60000)
+	{
+		tkAccess = tkRow.get("access");
+	}
+	else
+	{
+		tkResp = invokeurl
+		[
+			url :accountsUrl + "/oauth/v2/token"
+			type :POST
+			parameters:{"client_id":cfgClientId,"client_secret":cfgClientSecret,"grant_type":"refresh_token","refresh_token":tkRow.get("refresh")}
+		];
+		if(tkResp.get("access_token") != null)
+		{
+			tkAccess = tkResp.get("access_token");
+			tkExp = nowMs + ifnull(tkResp.get("expires_in"), 3600).toLong() * 1000;
+			zoho.cliq.updateRecord("jitowners", tkRow.get("id"), {"access":tkAccess,"accessexp":tkExp}, "jitaccess");
+		}
+		else
+		{
+			tkErr = "refresh_failed:" + ifnull(tkResp.get("error"), "unknown");
+			// A revoked grant never recovers; mark it so the person is asked to reconnect
+			// instead of every sweep retrying a dead token.
+			if(ifnull(tkResp.get("error"), "") == "invalid_code")
+			{
+				zoho.cliq.updateRecord("jitowners", tkRow.get("id"), {"status":"revoked","access":"","accessexp":0}, "jitaccess");
+			}
+		}
+	}
+}
+// ---- end lib/token.dg

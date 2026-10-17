@@ -1,0 +1,3 @@
+// jit-spike: can the bot post to its private audit channel through the connection?
+r = zoho.cliq.postToChannelAsBot("jitaudit", "jitaccessbot", {"text":"[spike] audit channel write test"}, "jitaccess");
+return {"text":"postToChannelAsBot: " + r.toString()};

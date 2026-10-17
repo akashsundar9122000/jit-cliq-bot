@@ -1,0 +1,126 @@
+// JIT Access Bot — grant buttons (function `jitgrant`): Approve, Retry and Close request.
+// Kept apart from jitaction because lib/decide.dg and lib/grant.dg together take most of the
+// platform's ~40 KB per-handler limit. arguments.key = "<action>|<request id>"; who pressed it
+// comes from the platform's `user` map, and whether they may is decided from live data.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+key = ifnull(arguments.get("key"), "");
+parts = key.toList("|");
+act = "";
+rid = "-";
+if(parts.size() == 2)
+{
+	act = parts.get(0);
+	rid = parts.get(1);
+}
+if(!cfgOk)
+{
+	return {"text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+if(!rid.matches("R[0-9]{12}"))
+{
+	return {"text":"That button is not valid any more."};
+}
+// An emergency pause stops access from growing: no approvals, no grant retries. Removals,
+// rejections and cancellations carry on.
+if(cfgPaused && (act == "approve" || act == "retry"))
+{
+	return {"text":"Paused by an administrator: no access is being granted right now. The request stays as it is; try again after the pause is lifted."};
+}
+grGo = false;
+out = {"text":"That button is not valid any more."};
+if(act == "approve")
+{
+	dcReqId = rid;
+	dcAction = "approve";
+	dcNewExpiry = 0;
+	dcNote = "";
+	// @include lib/decide.dg
+	out = dcMsg;
+	if(dcApproved)
+	{
+		grGo = true;
+		grReq = dcReq;
+		grData = dcData;
+		grToken = dcToken;
+	}
+}
+else if(act == "retry" || act == "close")
+{
+	q = Map();
+	q.put("criteria", "(orgid==" + org + ")&&(reqid==" + rid + ")");
+	f = zoho.cliq.getRecords("jitrequests", q, "jitaccess");
+	if(f.get("status") != "SUCCESS" || f.get("list").size() == 0)
+	{
+		return {"text":"I can't find that request."};
+	}
+	req = f.get("list").get(0);
+	rd = ifnull(req.get("data"), "{}").toMap();
+	st = req.get("status");
+	// APPROVED_PENDING_GRANT is retryable too: it is where a request waits if the grant step
+	// never ran (or stopped part-way). The grant's own lock stops a second, concurrent add.
+	if(st != "GRANT_FAILED" && !(act == "retry" && st == "APPROVED_PENDING_GRANT"))
+	{
+		return {"text":"This request is already *" + ifnull(statusWords.get(st), st) + "*. Nothing to do."};
+	}
+	tkUser = uid;
+	// @include lib/token.dg
+	if(tkAccess == "")
+	{
+		return {"text":"Before you can act on requests, I need to be able to add and remove members as you (one-time). Press *Connect*, then press this button again.","buttons":{{"label":"Connect","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"connect|-"}}}};
+	}
+	ciChannel = rd.get("chid");
+	ciToken = tkAccess;
+	// @include lib/chinfo.dg
+	if(!ciIsAdmin)
+	{
+		nTo = "";
+		nMsg = Map();
+		nAudit = "[denied] " + email + " tried to " + act + " " + rid + " for " + rd.get("ch") + " but is not a channel admin (role: " + ifnull(ciRole, ciErr) + ")";
+		// @include lib/notify.dg
+		return {"text":"Only an admin of " + rd.get("ch") + " can do this. I checked just now and you are not one."};
+	}
+	grReq = req;
+	if(st == "GRANT_FAILED")
+	{
+		tId = req.get("id");
+		tFrom = "GRANT_FAILED";
+		tTo = if(act == "close", "CANCELLED", "APPROVED_PENDING_GRANT");
+		tSet = Map();
+		// @include lib/transition.dg
+		if(!tOk)
+		{
+			return {"text":"Someone acted on this request a moment ago (" + tErr + "). Nothing changed."};
+		}
+		grReq = tRec;
+	}
+	if(act == "close")
+	{
+		ulKey = "open:" + req.get("reskey") + ":" + req.get("requesterid");
+		// @include lib/unlock.dg
+		nTo = req.get("requesterid");
+		nMsg = {"text":"Your request for *" + rd.get("ch") + "* was closed by " + email + " after I couldn't add you. Nothing was granted; you can ask again.\nRequest `" + rid + "`"};
+		nAudit = "[closed] " + rid + " " + rd.get("ch") + " for " + rd.get("email") + " by " + email + " after a failed grant";
+		// @include lib/notify.dg
+		return {"text":"Closed. " + rd.get("email") + " has been told nothing was granted."};
+	}
+	grGo = true;
+	grData = rd;
+	grToken = tkAccess;
+}
+if(grGo)
+{
+	grActor = uid;
+	grActorEmail = email;
+	// @include lib/grant.dg
+	pre = "";
+	if(act == "approve")
+	{
+		pre = ifnull(out.get("text"), "") + "\n";
+	}
+	out = {"text":pre + grMsg};
+}
+return out;

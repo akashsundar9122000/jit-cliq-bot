@@ -1,0 +1,349 @@
+// JIT Access Bot — message handler. Everything a person types to the bot lands here.
+// Identity comes only from the platform-supplied `user` map, never from message text.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+txt = ifnull(message, "").trim();
+low = txt.toLowerCase();
+words = low.toList(" ");
+cmd = "";
+if(words.size() > 0)
+{
+	cmd = words.get(0);
+}
+helpText = "I give people temporary access to Cliq channels, approved by the channel's admins and removed automatically when it ends.\n\n*To request access:* paste a channel link (or type #channel).\n*my access* — your requests and active access\n*pending* — requests waiting for your decision\n*enrol #channel* — (channel admins) allow temporary access to a channel you administer\n*unenrol #channel* — stop new requests for a channel\n*connect* — (approvers) let me add and remove members as you\n*help* — this message\n\nThe *JIT Access* widget (under More apps) shows the same, with buttons.";
+if(!cfgOk)
+{
+	return {"text":"I can't read my settings right now, so I'm not taking requests. Please try again in a few minutes."};
+}
+greetings = {"hi","hello","help","start","hey"};
+if(txt == "" || greetings.contains(low))
+{
+	return {"text":helpText,"card":{"title":"JIT Access Bot","theme":"modern-inline"}};
+}
+if(cmd == "connect")
+{
+	cnMode = "start";
+	cnUser = uid;
+	cnEmail = email;
+	cnOrg = org;
+	// @include lib/connect.dg
+	return cnMsg;
+}
+if(cmd == "disconnect")
+{
+	dq = Map();
+	dq.put("criteria", "userid==" + uid);
+	dFind = zoho.cliq.getRecords("jitowners", dq, "jitaccess");
+	if(dFind.get("status") != "SUCCESS")
+	{
+		return {"text":"I couldn't check your connection just now. Please try again."};
+	}
+	if(dFind.get("list").size() == 0)
+	{
+		return {"text":"You're not connected, so there's nothing to disconnect."};
+	}
+	dRow = dFind.get("list").get(0);
+	// Revoke at Zoho first: clearing only our copy would leave a working grant behind.
+	dRevoked = "no grant stored";
+	dRt = ifnull(dRow.get("refresh"), "");
+	if(dRt != "")
+	{
+		dRv = invokeurl
+		[
+			url :accountsUrl + "/oauth/v2/token/revoke"
+			type :POST
+			parameters:{"token":dRt}
+			detailed:true
+		];
+		dRevoked = if(ifnull(dRv.get("responseCode"), "") == "200", "revoked at Zoho", "Zoho revoke returned " + ifnull(dRv.get("responseCode"), "?"));
+	}
+	dW = zoho.cliq.updateRecord("jitowners", dRow.get("id"), {"status":"disconnected","refresh":"","access":"","accessexp":0}, "jitaccess");
+	// Read back: "Disconnected" must only be said once nothing is stored.
+	dBack = zoho.cliq.getRecordById("jitowners", dRow.get("id"), "jitaccess");
+	dClear = dW.get("status") == "SUCCESS" && dBack.get("status") == "SUCCESS" && ifnull(dBack.get("object").get("refresh"), "") == "";
+	nTo = "";
+	nMsg = Map();
+	nAudit = "[disconnect] " + email + " removed their stored Zoho grant (" + dRevoked + if(dClear, "", "; local clear FAILED") + ").";
+	// @include lib/notify.dg
+	if(!dClear)
+	{
+		return {"text":"I couldn't finish disconnecting you. Please try again; if it keeps failing, revoke \"JIT Access Bot\" in your Zoho account's connected apps."};
+	}
+	return {"text":"Disconnected (" + dRevoked + "). I no longer hold a Zoho grant for you. Access I granted on your approval will still be removed on time if another admin of that channel is connected; otherwise the admins are alerted."};
+}
+if(cmd == "enrol" || cmd == "enroll" || cmd == "unenrol" || cmd == "unenroll")
+{
+	enable = cmd == "enrol" || cmd == "enroll";
+	pInput = txt;
+	// @include lib/parse.dg
+	if(pKind != "channel_name" && pKind != "channel_chat")
+	{
+		return {"text":"Tell me which channel, e.g. *enrol #ops-room* or *enrol* followed by the channel link." + if(pReason != "", "\n" + pReason, "")};
+	}
+	if(pOrg != "" && pOrg != org)
+	{
+		return {"text":"That link belongs to a different Zoho organisation."};
+	}
+	tkUser = uid;
+	// @include lib/token.dg
+	if(tkAccess == "")
+	{
+		return {"text":"First I need to be able to act as you for that channel. Send *connect* (one-time), then send this again.","buttons":{{"label":"Connect","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"connect|-"}}}};
+	}
+	// Find the channel among those this admin can see, by unique name or chat id.
+	enChan = Map();
+	enNext = "";
+	enPages = 0;
+	enDone = false;
+	enLoop = {1,2,3,4,5};
+	for each enI in enLoop
+	{
+		if(!enDone)
+		{
+			enUrl = cliqApi + "/channels?joined=true&limit=100";
+			if(enNext != "")
+			{
+				enUrl = enUrl + "&next_token=" + enNext;
+			}
+			enResp = invokeurl
+			[
+				url :enUrl
+				type :GET
+				headers:{"Authorization":"Zoho-oauthtoken " + tkAccess}
+			];
+			enList = ifnull(enResp.get("channels"), List());
+			for each enC in enList
+			{
+				if(enC.get("unique_name") == pValue || enC.get("chat_id") == pValue)
+				{
+					enChan = enC;
+				}
+			}
+			enNext = ifnull(enResp.get("next_token"), "");
+			if(enChan.get("channel_id") != null || enNext == "" || enResp.get("has_more") != true)
+			{
+				enDone = true;
+			}
+		}
+	}
+	if(enChan.get("channel_id") == null)
+	{
+		return {"text":"I can't find that channel among the channels you've joined. Check the name, or paste the channel's link."};
+	}
+	if(!adminRoles.contains(enChan.get("current_user_role")))
+	{
+		return {"text":"Only an admin of " + enChan.get("name") + " can change its temporary-access setting. Your role there is " + enChan.get("current_user_role") + "."};
+	}
+	enKey = "cliqch:" + enChan.get("channel_id");
+	eq = Map();
+	eq.put("criteria", "(orgid==" + org + ")&&(reskey==" + enKey + ")");
+	enFind = zoho.cliq.getRecords("jitresources", eq, "jitaccess");
+	if(enFind.get("status") != "SUCCESS")
+	{
+		return {"text":"I couldn't save that just now. Please try again."};
+	}
+	enStatus = "disabled";
+	if(enable)
+	{
+		enStatus = "active";
+	}
+	enData = {"name":enChan.get("name"),"enrolledby":uid,"status":enStatus,"kind":"cliqchannel"};
+	enVals = {"orgid":org,"channelid":enChan.get("channel_id"),"uniquename":enChan.get("unique_name"),"chatid":enChan.get("chat_id"),"enrolledat":nowMs,"data":enData.toString()};
+	if(enFind.get("list").size() > 0)
+	{
+		enW = zoho.cliq.updateRecord("jitresources", enFind.get("list").get(0).get("id"), enVals, "jitaccess");
+	}
+	else
+	{
+		enVals.put("reskey", enKey);
+		enW = zoho.cliq.createRecord("jitresources", enVals, "jitaccess");
+	}
+	if(enW.get("status") != "SUCCESS")
+	{
+		return {"text":"I couldn't save that just now (" + ifnull(enW.get("code"), "error") + "). Please try again."};
+	}
+	nTo = "";
+	nMsg = Map();
+	nAudit = "[" + cmd.replaceAll("enroll", "enrol").replaceAll("unenroll", "unenrol") + "] " + enChan.get("name") + " (" + enChan.get("channel_id") + ") by " + email;
+	// @include lib/notify.dg
+	if(enable)
+	{
+		return {"text":enChan.get("name") + " now accepts temporary-access requests. People can paste its link to me; any admin of the channel can approve. Share this link: https://cliq.zoho.in/channels/" + enChan.get("unique_name")};
+	}
+	return {"text":enChan.get("name") + " no longer accepts new requests. Access that is already active still ends on schedule."};
+}
+if(cmd == "my" || cmd == "mine" || cmd == "status")
+{
+	mq = Map();
+	mq.put("criteria", "(orgid==" + org + ")&&(requesterid==" + uid + ")");
+	mq.put("order_by", "-createdat");
+	mq.put("limit", 20);
+	mFind = zoho.cliq.getRecords("jitrequests", mq, "jitaccess");
+	if(mFind.get("status") != "SUCCESS")
+	{
+		return {"text":"I couldn't read your requests just now. Please try again."};
+	}
+	rows = List();
+	myBtns = List();
+	mList = mFind.get("list");
+	liveStates = {"PENDING_APPROVAL","APPROVED_PENDING_GRANT","ACTIVE","EXTENSION_PENDING","REVOCATION_IN_PROGRESS","REVOCATION_FAILED"};
+	for each r in mList
+	{
+		rd = ifnull(r.get("data"), "{}").toMap();
+		line = rd.get("ch") + " — " + ifnull(statusWords.get(r.get("status")), r.get("status"));
+		ex = ifnull(r.get("expiresat"), "0").toLong();
+		// An end time on a rejected or cancelled request reads as access still to come.
+		if(ex > 0 && liveStates.contains(r.get("status")))
+		{
+			line = line + ", until " + ex.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+		}
+		rows.add(line + "  `" + r.get("reqid") + "`");
+		// Live access gets its actions here: reminders come from a scheduler, whose buttons
+		// would ask for consent to the scheduler. Cliq allows 5 buttons and 20-char labels.
+		mSt = r.get("status");
+		if((mSt == "ACTIVE" || mSt == "EXTENSION_PENDING") && myBtns.size() < 4)
+		{
+			if(mSt == "ACTIVE")
+			{
+				mbl = "Extend " + rd.get("ch");
+				myBtns.add({"label":mbl.subString(0, min(20, mbl.length())),"type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"extend|" + r.get("reqid")}});
+			}
+			mbl = "End " + rd.get("ch");
+			myBtns.add({"label":mbl.subString(0, min(20, mbl.length())),"type":"-","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"end|" + r.get("reqid")}});
+		}
+	}
+	if(rows.size() == 0)
+	{
+		return {"text":"You have no requests yet. Paste a channel link to start one."};
+	}
+	return {"text":"*Your requests* (newest first)\n" + rows.toString("\n"),"buttons":myBtns};
+}
+if(cmd == "pending" || cmd == "approvals")
+{
+	// One query per state: only "&&" criteria have been proven against Cliq datastores.
+	rows = List();
+	stuck = List();
+	retryBtns = List();
+	aStates = {"PENDING_APPROVAL","APPROVED_PENDING_GRANT","GRANT_FAILED","REVOCATION_FAILED","MANUAL_REVIEW"};
+	for each aSt in aStates
+	{
+		aq = Map();
+		aq.put("criteria", "(orgid==" + org + ")&&(status==" + aSt + ")");
+		aq.put("limit", 50);
+		aFind = zoho.cliq.getRecords("jitrequests", aq, "jitaccess");
+		if(aFind.get("status") == "SUCCESS")
+		{
+			aList = aFind.get("list");
+			for each r in aList
+			{
+				rd = ifnull(r.get("data"), "{}").toMap();
+				if(ifnull(rd.get("approvers"), "").toList(",").contains(uid))
+				{
+					if(aSt == "PENDING_APPROVAL")
+					{
+						rows.add(rd.get("ch") + " for " + rd.get("email") + " (" + rd.get("dur") + ")  `" + r.get("reqid") + "`");
+					}
+					else if(aSt == "REVOCATION_FAILED" || aSt == "MANUAL_REVIEW")
+					{
+						// Removal problems come from the sweep, whose messages carry no buttons
+						// (they would ask for consent to the scheduler); the actions live here.
+						stuck.add(rd.get("ch") + " for " + rd.get("email") + " — " + ifnull(statusWords.get(aSt), aSt) + "  `" + r.get("reqid") + "`");
+						if(aSt == "REVOCATION_FAILED" && retryBtns.size() < 4)
+						{
+							rbLabel = "Remove from " + rd.get("ch");
+							retryBtns.add({"label":rbLabel.subString(0, min(20, rbLabel.length())),"type":"+","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"rkretry|" + r.get("reqid")}});
+							rbLabel = "Review " + rd.get("ch");
+							retryBtns.add({"label":rbLabel.subString(0, min(20, rbLabel.length())),"type":"-","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"manual|" + r.get("reqid")}});
+						}
+						else if(aSt == "MANUAL_REVIEW" && retryBtns.size() < 5)
+						{
+							rbLabel = "Resolve " + rd.get("ch");
+							retryBtns.add({"label":rbLabel.subString(0, min(20, rbLabel.length())),"type":"+","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"resolve|" + r.get("reqid")}});
+						}
+					}
+					else
+					{
+						// Approved but nobody was added: offer Retry here, since the card
+						// that carried it may be gone.
+						stuck.add(rd.get("ch") + " for " + rd.get("email") + " — " + ifnull(statusWords.get(aSt), aSt) + "  `" + r.get("reqid") + "`");
+						if(retryBtns.size() < 5)
+						{
+							// Cliq refuses a whole message whose button label exceeds 20 characters.
+							rbLabel = "Retry " + rd.get("ch");
+							rbLabel = rbLabel.subString(0, min(20, rbLabel.length()));
+							retryBtns.add({"label":rbLabel,"type":"+","action":{"type":"invoke.function","data":{"name":"jitgrant"}},"arguments":{"key":"retry|" + r.get("reqid")}});
+						}
+					}
+				}
+			}
+		}
+	}
+	if(rows.size() == 0 && stuck.size() == 0)
+	{
+		return {"text":"Nothing is waiting for your decision."};
+	}
+	pText = "";
+	if(rows.size() > 0)
+	{
+		pText = "*Waiting for your decision*\n" + rows.toString("\n") + "\nUse the buttons on each request card to decide.";
+	}
+	if(stuck.size() > 0)
+	{
+		pText = pText + if(pText == "", "", "\n\n") + "*Needs attention*\n" + stuck.toString("\n");
+	}
+	return {"text":pText,"buttons":retryBtns};
+}
+// Anything else: treat it as a request for a channel.
+if(cfgPaused)
+{
+	return {"text":"Temporary access requests are paused by an administrator right now. Please try again later."};
+}
+pInput = txt;
+// @include lib/parse.dg
+if(pKind == "none")
+{
+	return {"text":"I didn't find a channel in that. " + helpText};
+}
+if(pKind == "unsupported")
+{
+	return {"text":pReason + " I can only grant temporary access to Cliq channels in this organisation."};
+}
+rvOrg = org;
+// @include lib/resolve.dg
+if(!rvFound)
+{
+	return {"text":rvErr};
+}
+// Already a member? Then there is nothing temporary to grant, and nothing the bot may remove.
+tkUser = rvData.get("enrolledby");
+// @include lib/token.dg
+if(tkAccess == "")
+{
+	return {"text":"I can't check " + rvData.get("name") + " right now because its admin's connection to me has lapsed. Ask a channel admin to send me *connect*."};
+}
+mbChannel = rvRes.get("channelid");
+mbToken = tkAccess;
+// @include lib/members.dg
+if(!mbOk)
+{
+	return {"text":"I couldn't read " + rvData.get("name") + "'s members just now. Please try again in a minute."};
+}
+if(mbIds.contains(uid))
+{
+	// Say whether it is temporary access from me: "never removed" would be wrong for that.
+	xq = Map();
+	xq.put("criteria", "(orgid==" + org + ")&&(requesterid==" + uid + ")&&(reskey==" + rvRes.get("reskey") + ")&&(status==ACTIVE)");
+	xFind = zoho.cliq.getRecords("jitrequests", xq, "jitaccess");
+	if(xFind.get("status") == "SUCCESS" && xFind.get("list").size() > 0)
+	{
+		xEnd = ifnull(xFind.get("list").get(0).get("expiresat"), "0").toLong().toTime().toString("EEE dd MMM, hh:mm a", tz);
+		return {"text":"You already have temporary access to " + rvData.get("name") + " until " + xEnd + " IST. Send *my access* to see it."};
+	}
+	return {"text":"You're already a member of " + rvData.get("name") + ", so there's nothing to request. (I never remove access I didn't grant.)"};
+}
+// A form returned from a message handler is silently dropped by Cliq (the run succeeds and
+// nothing appears), so the form is opened from a button, which Cliq does honour.
+return {"text":"You can ask for temporary access to *" + rvData.get("name") + "*. Any admin of the channel can approve, and the access ends automatically.","buttons":{{"label":"Request access","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"request|" + rvRes.get("reskey")}}}};

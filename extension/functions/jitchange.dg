@@ -1,0 +1,82 @@
+// JIT Access Bot — "Change & approve" form submit (function `jitchange`): approve with a new end
+// time, then grant. Its own function because lib/decide.dg plus lib/grant.dg would push jitform
+// past the platform's ~40 KB per-handler limit. Nothing the form carries is trusted: the
+// approver's authority is re-checked from live data in lib/decide.dg.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+fv = form.get("values");
+// Forms opened from the JIT Access widget say so; their replies must be banners.
+rpWidget = ifnull(fv.get("origin"), "").toString() == "widget";
+if(!cfgOk)
+{
+	return {"type":"form_error","text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+if(cfgPaused)
+{
+	return {"type":"form_error","text":"Paused by an admin: nothing new is being granted. Try again once it is resumed."};
+}
+// Select inputs arrive as {label, value} maps and datetime inputs as {date_time,
+// time_zone_id}; plain inputs arrive as text.
+durChoice = "";
+durRaw = fv.get("duration");
+if(durRaw != null)
+{
+	durChoice = durRaw.toString();
+	if(durChoice.startsWith("{"))
+	{
+		durChoice = durChoice.toMap().get("value");
+	}
+}
+untilMs = 0;
+untilRaw = fv.get("until");
+if(untilRaw != null && untilRaw.toString() != "")
+{
+	untilMap = untilRaw.toString().toMap();
+	untilStr = ifnull(untilMap.get("date_time"), "");
+	untilTz = ifnull(untilMap.get("time_zone_id"), tz);
+	if(untilStr.length() == 16)
+	{
+		untilMs = untilStr.toTime("yyyy-MM-dd'T'HH:mm", untilTz).toLong();
+	}
+	else if(untilStr.length() >= 19)
+	{
+		untilMs = untilStr.subString(0, 19).toTime("yyyy-MM-dd'T'HH:mm:ss", untilTz).toLong();
+	}
+}
+dcNewExpiry = 0;
+// "asked" keeps the end the requester chose (the widget's Approve form offers it first).
+if(durChoice != "asked")
+{
+	dChoice = durChoice;
+	dCustomMs = untilMs;
+	dNow = nowMs;
+	dMaxHours = cfgMaxHours;
+	// @include lib/duration.dg
+	if(dError != "")
+	{
+		return {"type":"form_error","text":dError};
+	}
+	dcNewExpiry = dExpires;
+}
+dcReqId = ifnull(fv.get("reqid"), "-");
+dcAction = "approve";
+dcNote = ifnull(fv.get("note"), "").trim();
+// @include lib/decide.dg
+if(!dcApproved)
+{
+	rpMsg = dcMsg;
+	// @include lib/reply.dg
+	return rpOut;
+}
+grReq = dcReq;
+grData = dcData;
+grToken = dcToken;
+grActor = uid;
+grActorEmail = email;
+// @include lib/grant.dg
+rpMsg = {"text":ifnull(dcMsg.get("text"), "") + "\n" + grMsg};
+// @include lib/reply.dg
+return rpOut;

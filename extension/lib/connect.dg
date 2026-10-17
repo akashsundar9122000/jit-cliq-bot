@@ -1,0 +1,126 @@
+// ---- lib/connect.dg: start or finish the one-time device-flow connection for a person.
+// in:  cnMode ("start" | "finish"), cnUser, cnEmail, cnOrg
+//      uses: nowMs, accountsUrl, ownerScopes, cfgClientId, cfgClientSecret
+// out: cnOk, cnMsg (message map to show the person)
+// The bot acts as a channel admin when it adds or removes members (an org admin cannot
+// touch private channels it is not in). That needs the admin's own grant, which Zoho's
+// device flow provides without any redirect URL: the admin approves a short code at
+// accounts.zoho.in, then clicks "I've approved".
+cnOk = false;
+cnMsg = Map();
+cnQ = Map();
+cnQ.put("criteria", "userid==" + cnUser);
+cnFind = zoho.cliq.getRecords("jitowners", cnQ, "jitaccess");
+cnRow = Map();
+if(cnFind.get("status") == "SUCCESS" && cnFind.get("list").size() > 0)
+{
+	cnRow = cnFind.get("list").get(0);
+}
+if(cfgClientId == "" || cfgClientSecret == "")
+{
+	cnMsg = {"text":"The bot's Zoho sign-in client is not configured yet. An org admin needs to finish setup (see the runbook)."};
+}
+else if(cnMode == "start")
+{
+	cnDev = invokeurl
+	[
+		url :accountsUrl + "/oauth/v3/device/code"
+		type :POST
+		parameters:{"client_id":cfgClientId,"scope":ownerScopes,"grant_type":"device_request","access_type":"offline"}
+	];
+	if(cnDev.get("device_code") == null)
+	{
+		cnMsg = {"text":"Zoho did not issue a sign-in code (" + ifnull(cnDev.get("error"), "unknown") + "). Try *connect* again in a minute."};
+	}
+	else
+	{
+		cnExp = nowMs + ifnull(cnDev.get("expires_in"), 300000).toLong();
+		cnStore = Map();
+		cnStore.put("device", cnDev.get("device_code"));
+		cnStore.put("deviceexp", cnExp);
+		if(cnRow.get("id") == null)
+		{
+			cnStore.put("userid", cnUser);
+			cnStore.put("orgid", cnOrg);
+			cnStore.put("email", cnEmail);
+			cnStore.put("status", "pending");
+			cnW = zoho.cliq.createRecord("jitowners", cnStore, "jitaccess");
+		}
+		else
+		{
+			cnW = zoho.cliq.updateRecord("jitowners", cnRow.get("id"), cnStore, "jitaccess");
+		}
+		if(cnW.get("status") != "SUCCESS")
+		{
+			cnMsg = {"text":"I could not save your sign-in request. Please try *connect* again."};
+		}
+		else
+		{
+			cnOk = true;
+			cnMsg = {"text":"To approve requests, I need to act as you when I add or remove channel members. This is a one-time step.\n\n1. Open the Zoho page below and confirm the code *" + cnDev.get("user_code") + "* (it expires in 5 minutes).\n2. Come back and press *I've approved*.","card":{"title":"Connect your Zoho account","theme":"modern-inline"},"buttons":{{"label":"Open Zoho","type":"+","action":{"type":"open.url","data":{"web":cnDev.get("verification_uri_complete")}}},{"label":"I've approved","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"connectdone|-"}}}};
+		}
+	}
+}
+else
+{
+	if(cnRow.get("id") == null || ifnull(cnRow.get("device"), "") == "")
+	{
+		cnMsg = {"text":"There is no sign-in in progress. Send *connect* to start one."};
+	}
+	else if(ifnull(cnRow.get("deviceexp"), "0").toLong() < nowMs)
+	{
+		cnMsg = {"text":"That code has expired. Send *connect* to get a new one."};
+	}
+	else
+	{
+		cnTok = invokeurl
+		[
+			url :accountsUrl + "/oauth/v3/device/token"
+			type :POST
+			parameters:{"client_id":cfgClientId,"client_secret":cfgClientSecret,"grant_type":"device_token","code":cnRow.get("device")}
+		];
+		if(cnTok.get("refresh_token") == null)
+		{
+			cnE = ifnull(cnTok.get("error"), "unknown");
+			if(cnE == "authorization_pending" || cnE == "slow_down")
+			{
+				cnMsg = {"text":"Zoho has not seen your approval yet. Confirm the code on the Zoho page, then press *I've approved* again."};
+			}
+			else
+			{
+				cnMsg = {"text":"Zoho refused the sign-in (" + cnE + "). Send *connect* to start again."};
+			}
+		}
+		else
+		{
+			// Prove whose grant this is. Someone signed in to another Zoho account could
+			// approve the code; storing that grant would let the bot act as the wrong person.
+			cnWho = invokeurl
+			[
+				url :accountsUrl + "/oauth/user/info"
+				type :GET
+				headers:{"Authorization":"Zoho-oauthtoken " + cnTok.get("access_token")}
+			];
+			cnZuid = ifnull(cnWho.get("ZUID"), "").toString();
+			if(cnZuid != cnUser)
+			{
+				zoho.cliq.updateRecord("jitowners", cnRow.get("id"), {"device":"","deviceexp":0}, "jitaccess");
+				cnMsg = {"text":"That code was approved by a different Zoho account (not yours), so I did not keep it. Send *connect* and approve while signed in as yourself."};
+			}
+			else
+			{
+				cnUpd = zoho.cliq.updateRecord("jitowners", cnRow.get("id"), {"status":"connected","refresh":cnTok.get("refresh_token"),"access":cnTok.get("access_token"),"accessexp":nowMs + 3000000,"device":"","deviceexp":0,"connectedat":nowMs}, "jitaccess");
+				if(cnUpd.get("status") == "SUCCESS")
+				{
+					cnOk = true;
+					cnMsg = {"text":"Connected. I can now act as you for channels you administer: adding approved people and removing them when their access ends. You can disconnect any time with *disconnect*."};
+				}
+				else
+				{
+					cnMsg = {"text":"I could not save your connection. Please try *connect* again."};
+				}
+			}
+		}
+	}
+}
+// ---- end lib/connect.dg

@@ -1,0 +1,11 @@
+// JIT Access widget — tabs. The Admin tab is shown only to Cliq org admins (read from the
+// platform's user map each time, never stored). Hiding it is convenience, not security: the
+// view and the settings form check again.
+tabs = list();
+tabs.add({"label":"My access","id":"mine"});
+tabs.add({"label":"Approvals","id":"appr"});
+if(user.get("admin") == true)
+{
+	tabs.add({"label":"Admin","id":"admin"});
+}
+return {"tabs":tabs,"tab_view_type":"classic"};

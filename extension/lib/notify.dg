@@ -1,0 +1,39 @@
+// ---- lib/notify.dg: send a bot message to people, and an entry to the audit channel.
+// in:  nTo (comma-separated user ids, may be ""), nMsg (message map), nAudit (text, may be "")
+//      uses: botName, auditChannel
+// out: nSent (true if the DM call succeeded or nothing to send), nAudited
+// Audit entries carry who, what, which channel and when. Never tokens, device codes or
+// anything read from a channel's messages.
+nSent = true;
+nAudited = true;
+if(nTo != "")
+{
+	nM = Map();
+	for each nK in nMsg.keys()
+	{
+		nM.put(nK, nMsg.get(nK));
+	}
+	nM.put("userids", nTo);
+	nR = zoho.cliq.postToBot(botName, nM, "jitaccess");
+	nSent = nR.get("users") != null;
+	if(!nSent)
+	{
+		// A failed DM is otherwise silent (Cliq returns the error as a value), so say so in
+		// the audit entry that goes out next. Example: a button label over 20 characters.
+		info "dm_failed " + nR.toString();
+		if(nAudit != "")
+		{
+			nAudit = nAudit + " [DM to " + nTo + " failed: " + ifnull(nR.get("code"), "unknown") + "]";
+		}
+	}
+}
+if(nAudit != "")
+{
+	nA = zoho.cliq.postToChannelAsBot(auditChannel, botName, {"text":nAudit}, "jitaccess");
+	nAudited = ifnull(nA.get("status"), "") == "success";
+	if(!nAudited)
+	{
+		info "audit_failed " + nA.toString();
+	}
+}
+// ---- end lib/notify.dg

@@ -1,0 +1,33 @@
+// ---- lib/members.dg: list a channel's members as a given person.
+// in:  mbChannel (channel id), mbToken (access token)         uses: cliqApi, adminRoles
+// out: mbOk, mbIds (list of user ids), mbAdmins (list of admin user ids), mbErr
+// Membership writes return 204 with an empty body, so this read is how every grant and
+// revoke is proven.
+mbOk = false;
+mbIds = List();
+mbAdmins = List();
+mbErr = "";
+mbResp = invokeurl
+[
+	url :cliqApi + "/channels/" + mbChannel + "/members"
+	type :GET
+	headers:{"Authorization":"Zoho-oauthtoken " + mbToken}
+];
+if(mbResp.get("members") != null)
+{
+	mbOk = true;
+	mbList = mbResp.get("members");
+	for each mbM in mbList
+	{
+		mbIds.add(mbM.get("user_id"));
+		if(adminRoles.contains(mbM.get("user_role")))
+		{
+			mbAdmins.add(mbM.get("user_id"));
+		}
+	}
+}
+else
+{
+	mbErr = ifnull(mbResp.get("code"), "unreadable");
+}
+// ---- end lib/members.dg

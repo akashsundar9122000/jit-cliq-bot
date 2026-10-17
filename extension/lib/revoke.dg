@@ -1,0 +1,145 @@
+// ---- lib/revoke.dg: remove exactly the access the bot granted, prove it, record it, tell people.
+// in:  rkReq (request record: ACTIVE, EXTENSION_PENDING or REVOCATION_FAILED), rkData (its
+//      JSON as a map), rkToken (a current channel admin's access token), rkFinal
+//      ("REVOKED_EARLY" | "EXPIRED_REVOKED"), rkWhy (e.g. "ended early by a@b.c", "expired"),
+//      rkButtons (true when called from a bot function; false from a scheduler, whose cards
+//      are attributed to the scheduler itself and would ask each user to consent to it)
+//      uses: cliqApi, nowMs, hourMs, lib/lock, lib/members, lib/transition, lib/unlock, lib/notify
+// out: rkOutcome ("removed" | "failed" | "busy" | "error"), rkMsg (for whoever triggered it)
+// Removal returns 204 with no body, so it counts only once the members list, read back, no
+// longer contains the person. Access the bot did not create is never removed.
+rkOutcome = "error";
+rkMsg = "";
+rkRid = rkReq.get("reqid");
+rkUser = rkReq.get("requesterid");
+rkCh = rkData.get("ch");
+rkEmail = rkData.get("email");
+rkAttempts = ifnull(rkReq.get("attempts"), "0").toLong();
+// Early end and expiry share one key per attempt, so only one of them ever removes.
+lkKey = "revoke:" + rkRid + ":" + rkAttempts;
+lkReq = rkRid;
+// @include lib/lock.dg
+if(lkTaken)
+{
+	rkOutcome = "busy";
+	rkMsg = "I'm already removing access to " + rkCh + ". Nothing more to do.";
+}
+else if(!lkOk)
+{
+	// The lock could not be taken at all (e.g. the datastore is full). Reported as "busy" this
+	// would look like progress while access outlived its end, hour after hour — so it alerts.
+	rkOutcome = "error";
+	rkMsg = "I couldn't start removing access to " + rkCh + " (" + lkErr + "). The admins have been told.";
+	nTo = ifnull(rkData.get("approvers"), "");
+	nMsg = {"text":"I couldn't start removing " + rkEmail + " from *" + rkCh + "* (" + lkErr + "). They are still a member; if this repeats, the bot's datastore may be full — see the runbook.\nRequest `" + rkRid + "`","card":{"title":"Removal blocked","theme":"modern-inline"}};
+	nAudit = "[revoke-blocked] " + rkRid + " " + rkEmail + " → " + rkCh + ": lock " + lkErr;
+	// @include lib/notify.dg
+}
+else
+{
+	tId = rkReq.get("id");
+	tFrom = rkReq.get("status");
+	tTo = "REVOCATION_IN_PROGRESS";
+	tSet = Map();
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		rkMsg = "I couldn't start removing access (" + tErr + "). Nothing changed.";
+	}
+	else
+	{
+		rkErr = "";
+		rkOurs = ifnull(rkReq.get("createdbybot"), "").toString() == "true";
+		if(rkOurs && rkToken == "")
+		{
+			// No channel admin has a working connection: nobody the bot may act as.
+			rkErr = "no_admin_connection";
+		}
+		else if(rkOurs)
+		{
+			rkDel = invokeurl
+			[
+				url :cliqApi + "/channels/" + rkData.get("chid") + "/members/" + rkUser
+				type :DELETE
+				headers:{"Authorization":"Zoho-oauthtoken " + rkToken}
+				detailed:true
+			];
+			mbChannel = rkData.get("chid");
+			mbToken = rkToken;
+			// @include lib/members.dg
+			if(!mbOk)
+			{
+				rkErr = "readback:" + mbErr + ",delete:" + ifnull(rkDel.get("responseCode"), "?");
+			}
+			else if(mbIds.contains(rkUser))
+			{
+				rkErr = "still_member:" + ifnull(rkDel.get("responseCode"), "?");
+			}
+		}
+		tSet = Map();
+		tFrom = "REVOCATION_IN_PROGRESS";
+		if(rkErr == "")
+		{
+			rkOutcome = "removed";
+			tTo = rkFinal;
+			rkData.remove("lasterror");
+		}
+		else
+		{
+			rkOutcome = "failed";
+			tTo = "REVOCATION_FAILED";
+			rkData.put("lasterror", rkErr.subString(0, min(60, rkErr.length())));
+			tSet.put("attempts", rkAttempts + 1);
+			// Back off before the sweep retries: 15 minutes, doubling, capped at 4 hours.
+			rkSteps = {1,2,4,8,16};
+			rkWait = min(4 * hourMs, (hourMs / 4) * rkSteps.get(min(rkAttempts, 4)));
+			tSet.put("nextactionat", nowMs + rkWait);
+		}
+		tSet.put("data", rkData.toString());
+		// @include lib/transition.dg
+		if(!tOk)
+		{
+			// The removal may have happened; the request stays REVOCATION_IN_PROGRESS for
+			// the sweep's reconciliation to settle against the members list.
+			rkOutcome = "error";
+			rkMsg = "I couldn't record the result (" + tErr + "). An admin should check " + rkCh + "'s members.";
+		}
+		else
+		{
+			rkAdmins = ifnull(rkData.get("approvers"), "");
+			if(rkOutcome == "removed")
+			{
+				ulKey = "open:" + rkReq.get("reskey") + ":" + rkUser;
+				// @include lib/unlock.dg
+				rkWhat = if(rkOurs, "I removed you from", "Your temporary access ended for");
+				rkReqMsg = {"text":"Your access to *" + rkCh + "* has ended (" + rkWhy + "). " + rkWhat + " the channel.\nRequest `" + rkRid + "`","card":{"title":"Access ended","theme":"modern-inline"}};
+				rkAdmMsg = {"text":rkEmail + "'s access to " + rkCh + " has ended (" + rkWhy + ")" + if(rkOurs, "; confirmed removed from the members list.", "; it was not granted by me, so I removed nothing.") + "\nRequest `" + rkRid + "`"};
+				rkAudit = "[" + if(rkFinal == "REVOKED_EARLY", "revoked-early", "expired") + "] " + rkRid + " " + rkEmail + " → " + rkCh + " (" + rkWhy + ")" + if(rkOurs, " (read back: not a member)", " (not created by the bot; nothing removed)");
+				rkMsg = "Done. " + rkEmail + " no longer has access to " + rkCh + ".";
+			}
+			else
+			{
+				rkReqMsg = {"text":"Your access to *" + rkCh + "* should have ended (" + rkWhy + "), but I couldn't remove you yet. I'll keep trying.\nRequest `" + rkRid + "`"};
+				rkAdmText = "I couldn't remove " + rkEmail + " from *" + rkCh + "* (" + rkErr + "). I'll retry with growing gaps. If it keeps failing, remove them by hand and mark it for review.\nRequest `" + rkRid + "`";
+				rkAdmMsg = {"text":rkAdmText + "\nSend me *pending* to retry now or mark it for review.","card":{"title":"Removal failed","theme":"modern-inline"}};
+				if(rkButtons)
+				{
+					rkAdmMsg = {"text":rkAdmText,"card":{"title":"Removal failed","theme":"modern-inline"},"buttons":{{"label":"Retry removal","type":"+","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"rkretry|" + rkRid}},{"label":"Manual review","type":"-","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"manual|" + rkRid}}}};
+				}
+				rkAudit = "[revoke-failed] " + rkRid + " " + rkEmail + " → " + rkCh + " (" + rkWhy + "): " + rkErr;
+				rkMsg = "I couldn't remove access to " + rkCh + " yet (" + rkErr + "). I'll retry and the admins have been told.";
+			}
+			nTo = rkUser;
+			nMsg = rkReqMsg;
+			nAudit = rkAudit;
+			// @include lib/notify.dg
+			nTo = rkAdmins;
+			nMsg = rkAdmMsg;
+			nAudit = "";
+			// @include lib/notify.dg
+		}
+	}
+}
+// ---- end lib/revoke.dg

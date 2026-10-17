@@ -1,0 +1,160 @@
+// JIT Access Bot — forms about live access (function `jitactive`): "Request more time" from the
+// requester, and "Mark for manual review" from an admin when a removal keeps failing. Nothing a
+// form carries is trusted: the request, its state, the limits and the actor's authority are all
+// re-read from live data.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+fname = form.get("name");
+fv = form.get("values");
+// Forms opened from the JIT Access widget say so; their replies must be banners.
+rpWidget = ifnull(fv.get("origin"), "").toString() == "widget";
+if(!cfgOk)
+{
+	return {"type":"form_error","text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+rid = ifnull(fv.get("reqid"), "-").toString();
+if(!rid.matches("R[0-9]{12}"))
+{
+	rid = "R000000000000";
+}
+note = ifnull(fv.get("note"), "").trim();
+if(note.length() < 5)
+{
+	return {"type":"form_error","text":"Please give a reason.","inputs":{"note":"At least a few words, please."}};
+}
+clIn = note;
+// @include lib/clean.dg
+note = clOut;
+note = note.subString(0, min(150, note.length()));
+q = Map();
+q.put("criteria", "(orgid==" + org + ")&&(reqid==" + rid + ")");
+f = zoho.cliq.getRecords("jitrequests", q, "jitaccess");
+if(f.get("status") != "SUCCESS" || f.get("list").size() == 0)
+{
+	return {"type":"form_error","text":"I can't find that request."};
+}
+req = f.get("list").get(0);
+rd = ifnull(req.get("data"), "{}").toMap();
+st = req.get("status");
+fmt = "EEE dd MMM, hh:mm a";
+// ------------------------------------------------------------------ request more time
+if(fname == "jitextend")
+{
+	if(req.get("requesterid") != uid)
+	{
+		return {"type":"form_error","text":"Only the person with the access can ask for more time."};
+	}
+	if(st != "ACTIVE")
+	{
+		return {"type":"form_error","text":"This access is " + ifnull(statusWords.get(st), st) + ", so it can't be extended now."};
+	}
+	moreRaw = ifnull(fv.get("more"), "").toString();
+	if(moreRaw.startsWith("{"))
+	{
+		moreRaw = moreRaw.toMap().get("value");
+	}
+	if(!moreRaw.matches("[0-9]{1,3}"))
+	{
+		return {"type":"form_error","text":"Choose how much longer you need."};
+	}
+	oldEnd = ifnull(req.get("expiresat"), "0").toLong();
+	newEnd = oldEnd + moreRaw.toLong() * hourMs;
+	// The cap counts from now, like a new request: an extension may not outlast what a fresh
+	// request could have asked for.
+	maxH = cfgMaxHours;
+	rq = Map();
+	rq.put("criteria", "(orgid==" + org + ")&&(reskey==" + req.get("reskey") + ")");
+	rF = zoho.cliq.getRecords("jitresources", rq, "jitaccess");
+	if(rF.get("status") == "SUCCESS" && rF.get("list").size() > 0)
+	{
+		resMax = ifnull(rF.get("list").get(0).get("maxhours"), "0").toLong();
+		if(resMax > 0 && resMax < maxH)
+		{
+			maxH = resMax;
+		}
+	}
+	if(newEnd - nowMs > maxH * hourMs)
+	{
+		return {"type":"form_error","text":"That would run past the " + maxH + "-hour limit for " + rd.get("ch") + ". Choose less time."};
+	}
+	// One ask per end time; a fresh end (after an approval) allows a fresh ask.
+	lkKey = "exq:" + rid + ":" + ifnull(req.get("expiryversion"), "1");
+	lkReq = rid;
+	// @include lib/lock.dg
+	if(lkTaken)
+	{
+		return {"type":"form_error","text":"You've already asked to extend this end time. Send *my access* to see where it stands."};
+	}
+	if(!lkOk)
+	{
+		return {"type":"form_error","text":"I couldn't save your request (" + lkErr + "). Please try again."};
+	}
+	rd.put("extto", newEnd);
+	rd.put("extwhy", note);
+	tId = req.get("id");
+	tFrom = "ACTIVE";
+	tTo = "EXTENSION_PENDING";
+	tSet = Map();
+	tSet.put("data", rd.toString());
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		return {"type":"form_error","text":"I couldn't save your request (" + tErr + "). Please try again."};
+	}
+	oldTxt = oldEnd.toTime().toString(fmt, tz) + " IST";
+	newTxt = newEnd.toTime().toString(fmt, tz) + " IST";
+	nTo = ifnull(rd.get("approvers"), "");
+	nMsg = {"text":"*" + email + "* asks to extend access to *" + rd.get("ch") + "*\n*From:* " + oldTxt + "\n*To:* " + newTxt + "\n*Reason:* " + note + "\nIf nobody decides, access still ends at " + oldTxt + ".\nRequest `" + rid + "`","card":{"title":"Extension request","theme":"modern-inline"},"buttons":{{"label":"Approve extension","type":"+","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"extok|" + rid}},{"label":"Reject","type":"-","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"extno|" + rid}}}};
+	nAudit = "[extension-requested] " + rid + " " + email + " → " + rd.get("ch") + " from " + oldTxt + " to " + newTxt;
+	// @include lib/notify.dg
+	rpMsg = {"text":"Asked " + rd.get("ch") + "'s admins to extend your access to " + newTxt + ". Until someone approves, it still ends " + oldTxt + "."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+// ------------------------------------------------------------------ mark for manual review
+if(fname == "jitmanual")
+{
+	if(st != "REVOCATION_FAILED")
+	{
+		return {"type":"form_error","text":"This request is " + ifnull(statusWords.get(st), st) + ", so it can't be marked for review."};
+	}
+	tkUser = uid;
+	// @include lib/token.dg
+	if(tkAccess == "")
+	{
+		return {"type":"form_error","text":"Before you can act on requests, send me *connect* (one-time)."};
+	}
+	ciChannel = rd.get("chid");
+	ciToken = tkAccess;
+	// @include lib/chinfo.dg
+	if(!ciIsAdmin)
+	{
+		return {"type":"form_error","text":"Only an admin of " + rd.get("ch") + " can do this. I checked just now and you are not one."};
+	}
+	rd.put("manualnote", note);
+	rd.put("manualby", email);
+	tId = req.get("id");
+	tFrom = "REVOCATION_FAILED";
+	tTo = "MANUAL_REVIEW";
+	tSet = Map();
+	tSet.put("data", rd.toString());
+	// @include lib/transition.dg
+	if(!tOk)
+	{
+		return {"type":"form_error","text":"Someone acted on this a moment ago (" + tErr + "). Nothing changed."};
+	}
+	// A card that stays with every approver: the review is only over when someone resolves it.
+	nTo = ifnull(rd.get("approvers"), "");
+	nMsg = {"text":email + " marked request `" + rid + "` (" + rd.get("email") + " → " + rd.get("ch") + ") for manual review: " + note + "\nI've stopped retrying. Check the channel's members, remove them by hand if needed, then mark it resolved.","card":{"title":"Manual review","theme":"modern-inline"},"buttons":{{"label":"Mark resolved","type":"+","action":{"type":"invoke.function","data":{"name":"jitend"}},"arguments":{"key":"resolve|" + rid}}}};
+	nAudit = "[manual-review] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + " by " + email + ": " + note;
+	// @include lib/notify.dg
+	rpMsg = {"text":"Marked for manual review. I've stopped retrying the removal."};
+	// @include lib/reply.dg
+	return rpOut;
+}
+return {"type":"form_error","text":"I don't recognise that form."};

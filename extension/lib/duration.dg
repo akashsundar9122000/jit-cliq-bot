@@ -1,0 +1,49 @@
+// ---- lib/duration.dg: turn a requested duration into an expiry the sweep can honour.
+// in:  dChoice ("2h","4h","8h","1d","3d","7d","14d","30d","custom"), dCustomMs (0 if none),
+//      dNow (ms), dMaxHours                       uses: hourMs, tzOffsetMs
+// out: dExpires (ms, on an IST hour boundary), dError ("" when valid)
+// The sweep runs at the top of each IST hour, so every expiry is rounded UP to the next IST
+// hour: access then ends exactly when a sweep runs, never earlier than the requester asked.
+dError = "";
+dExpires = 0;
+dRaw = 0;
+if(dChoice == "custom")
+{
+	if(dCustomMs == null || dCustomMs <= dNow)
+	{
+		dError = "Pick an end time in the future.";
+	}
+	else
+	{
+		dRaw = dCustomMs;
+	}
+}
+else if(dChoice.matches("[0-9]{1,3}h"))
+{
+	dRaw = dNow + dChoice.remove("h").toLong() * hourMs;
+}
+else if(dChoice.matches("[0-9]{1,3}d"))
+{
+	dRaw = dNow + dChoice.remove("d").toLong() * 24 * hourMs;
+}
+else
+{
+	dError = "Choose how long you need access.";
+}
+if(dError == "")
+{
+	dRem = (dRaw + tzOffsetMs) % hourMs;
+	dExpires = dRaw;
+	if(dRem > 0)
+	{
+		dExpires = dRaw - dRem + hourMs;
+	}
+	// The cap applies to what was asked for, not to the rounding the bot adds: otherwise a
+	// request for exactly the maximum is refused because the next hour boundary is past it.
+	if(dRaw - dNow > dMaxHours * hourMs)
+	{
+		dError = "That is longer than the " + dMaxHours + "-hour maximum. Choose a shorter period.";
+		dExpires = 0;
+	}
+}
+// ---- end lib/duration.dg

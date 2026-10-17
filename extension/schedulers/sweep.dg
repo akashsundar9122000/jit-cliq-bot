@@ -1,0 +1,340 @@
+// JIT Access Bot — hourly sweep. The same script runs in 24 daily schedulers, one at each IST
+// hour (Cliq schedulers cannot repeat more often than daily). Each run: records a heartbeat and
+// alerts org admins if the previous hour's run is missing; sends reminders; removes expired
+// access; retries failed removals with back-off; settles removals that stopped part-way; and
+// checks active grants against the real members lists. Scheduler handlers are void: no return.
+// Nothing it sends carries buttons: a scheduler's messages are attributed to the scheduler, so
+// a button would ask each person to consent to that scheduler (one of 24) — the actions are
+// offered instead by *my access* and *pending*, which the bot itself answers.
+// @include lib/config.dg
+// @include lib/cfg.dg
+org = ifnull(user.get("organization_id"), "").toString();
+swLog = List();
+if(!cfgOk || org == "")
+{
+	info "SWEEP skipped: settings unreadable or no organisation (cfgOk=" + cfgOk + ")";
+}
+else
+{
+	// ------------------------------------------------------------- heartbeat
+	// Written first, so a sweep that later fails still proves it ran; read by the next run,
+	// so a missing hour is reported instead of looking like a quiet one.
+	hbQ = Map();
+	hbQ.put("criteria", "ckey==heartbeat");
+	hbF = zoho.cliq.getRecords("jitconfig", hbQ, "jitaccess");
+	hbPrev = 0;
+	if(hbF.get("status") == "SUCCESS" && hbF.get("list").size() > 0)
+	{
+		hbRow = hbF.get("list").get(0);
+		hbVal = ifnull(hbRow.get("cvalue"), "0");
+		if(hbVal.matches("[0-9]{10,14}"))
+		{
+			hbPrev = hbVal.toLong();
+		}
+		hbW = zoho.cliq.updateRecord("jitconfig", hbRow.get("id"), {"cvalue":nowMs.toString(),"updatedat":nowMs,"updatedby":"sweep"}, "jitaccess");
+	}
+	else
+	{
+		hbW = zoho.cliq.createRecord("jitconfig", {"ckey":"heartbeat","cvalue":nowMs.toString(),"csecret":"","updatedat":nowMs,"updatedby":"sweep"}, "jitaccess");
+	}
+	if(hbW.get("status") != "SUCCESS")
+	{
+		swLog.add("heartbeat_write_failed:" + ifnull(hbW.get("code"), ""));
+	}
+	if(hbPrev > 0 && nowMs - hbPrev > 90 * 60000)
+	{
+		hbGapMs = nowMs - hbPrev;
+		hbGapH = hbGapMs / hourMs;
+		hbGap = hbGapH.round(1);
+		nTo = cfgAdmins.toString(",");
+		nMsg = {"text":"The JIT Access Bot sweep did not run for about " + hbGap + " hours (last run " + hbPrev.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST). Expiries and reminders due in that gap are being handled now; check that all 24 *jitsweep* schedulers are enabled.","card":{"title":"Missed sweep","theme":"modern-inline"}};
+		nAudit = "[heartbeat] sweep missing for ~" + hbGap + " h before this run";
+		// @include lib/notify.dg
+	}
+	// ------------------------------------------------------------- collect due work
+	// One query per state: only "&&" criteria are proven against Cliq datastores.
+	work = List();
+	workIds = List();
+	wStates = {"REVOCATION_IN_PROGRESS","REVOCATION_FAILED","ACTIVE","EXTENSION_PENDING"};
+	for each wSt in wStates
+	{
+		wQ = Map();
+		wQ.put("criteria", "(orgid==" + org + ")&&(status==" + wSt + ")&&(nextactionat<=" + nowMs + ")");
+		wQ.put("limit", 50);
+		wF = zoho.cliq.getRecords("jitrequests", wQ, "jitaccess");
+		if(wF.get("status") == "SUCCESS")
+		{
+			wList = wF.get("list");
+			for each wR in wList
+			{
+				work.add({"r":wR,"a":""});
+				workIds.add(wR.get("reqid"));
+			}
+		}
+		else
+		{
+			swLog.add("query_failed:" + wSt + ":" + ifnull(wF.get("code"), ""));
+		}
+	}
+	// An approved request still waiting for its grant after 10 minutes has stopped part-way;
+	// nothing else would ever look at it (its nextactionat is days away).
+	sgQ = Map();
+	sgQ.put("criteria", "(orgid==" + org + ")&&(status==APPROVED_PENDING_GRANT)");
+	sgQ.put("limit", 50);
+	sgF = zoho.cliq.getRecords("jitrequests", sgQ, "jitaccess");
+	if(sgF.get("status") == "SUCCESS")
+	{
+		sgList = sgF.get("list");
+		for each sgR in sgList
+		{
+			if(nowMs - ifnull(sgR.get("modified_time"), nowMs.toString()).toLong() > 10 * 60000 && !workIds.contains(sgR.get("reqid")))
+			{
+				work.add({"r":sgR,"a":"stuckgrant"});
+				workIds.add(sgR.get("reqid"));
+			}
+		}
+	}
+	// ------------------------------------------------------------- reconcile active grants
+	// Someone may remove a member by hand. The record must then stop claiming access, or the
+	// bot would later "remove" a person who has since been re-added for other reasons.
+	rcQ = Map();
+	rcQ.put("criteria", "(orgid==" + org + ")&&(status==ACTIVE)");
+	rcQ.put("limit", 100);
+	rcF = zoho.cliq.getRecords("jitrequests", rcQ, "jitaccess");
+	rcChans = Map();
+	if(rcF.get("status") == "SUCCESS")
+	{
+		rcList = rcF.get("list");
+		for each rcR in rcList
+		{
+			rcD = ifnull(rcR.get("data"), "{}").toMap();
+			if(ifnull(rcR.get("createdbybot"), "").toString() == "true" && !workIds.contains(rcR.get("reqid")))
+			{
+				rcK = rcD.get("chid");
+				if(!rcChans.containKey(rcK))
+				{
+					rcChans.put(rcK, List());
+				}
+				rcL = rcChans.get(rcK);
+				rcL.add(rcR);
+				rcChans.put(rcK, rcL);
+			}
+		}
+	}
+	rcDone = 0;
+	for each rcK in rcChans.keys()
+	{
+		// Members reads count against Cliq's rate limit; ten channels an hour is plenty here.
+		if(rcDone < 10)
+		{
+			rcDone = rcDone + 1;
+			rcFirst = rcChans.get(rcK).get(0);
+			rcFD = ifnull(rcFirst.get("data"), "{}").toMap();
+			rcCands = List();
+			rcCands.add(ifnull(rcFD.get("grantedby"), ""));
+			rcCands.addAll(ifnull(rcFD.get("approvers"), "").toList(","));
+			tkAccess = "";
+			for each rcC in rcCands
+			{
+				if(tkAccess == "" && rcC != "")
+				{
+					tkUser = rcC;
+					// @include lib/token.dg
+				}
+			}
+			if(tkAccess != "")
+			{
+				mbChannel = rcK;
+				mbToken = tkAccess;
+				// @include lib/members.dg
+				if(mbOk)
+				{
+					rcRecs = rcChans.get(rcK);
+					for each rcR in rcRecs
+					{
+						if(!mbIds.contains(rcR.get("requesterid")))
+						{
+							work.add({"r":rcR,"a":"gone"});
+						}
+					}
+				}
+				else
+				{
+					swLog.add("reconcile_unreadable:" + rcK + ":" + mbErr);
+				}
+			}
+		}
+	}
+	// ------------------------------------------------------------- do the work
+	swDone = 0;
+	for each w in work
+	{
+		// A cap keeps one run inside Deluge's statement and time limits; the rest wait an hour.
+		if(swDone < 25)
+		{
+			swDone = swDone + 1;
+			r = w.get("r");
+			a = w.get("a");
+			rd = ifnull(r.get("data"), "{}").toMap();
+			st = r.get("status");
+			rid = r.get("reqid");
+			ex = ifnull(r.get("expiresat"), "0").toLong();
+			if(a == "")
+			{
+				if(st == "REVOCATION_IN_PROGRESS")
+				{
+					a = "stuck";
+				}
+				else if(st == "REVOCATION_FAILED")
+				{
+					a = "retry";
+				}
+				else if(ex <= nowMs)
+				{
+					a = "expire";
+				}
+				else if(st == "ACTIVE" && ifnull(r.get("remindersent"), "").toString() != "true")
+				{
+					a = "remind";
+				}
+				else
+				{
+					a = "resched";
+				}
+			}
+			tkAccess = "";
+			if(a == "expire" || a == "retry" || a == "gone" || a == "stuck" || a == "stuckgrant")
+			{
+				swCands = List();
+				swCands.add(ifnull(rd.get("grantedby"), ""));
+				swCands.addAll(ifnull(rd.get("approvers"), "").toList(","));
+				for each swC in swCands
+				{
+					if(tkAccess == "" && swC != "")
+					{
+						tkUser = swC;
+						// @include lib/token.dg
+					}
+				}
+			}
+			if(a == "expire" || a == "retry" || a == "gone")
+			{
+				rkReq = r;
+				rkData = rd;
+				rkToken = tkAccess;
+				rkButtons = false;
+				rkFinal = if(ex <= nowMs, "EXPIRED_REVOKED", "REVOKED_EARLY");
+				rkWhy = if(a == "gone", "removed from the channel outside the bot", if(ex <= nowMs, "it expired", "it was ended early"));
+				// @include lib/revoke.dg
+				swLog.add(rid + ":" + a + ":" + rkOutcome);
+			}
+			else if(a == "remind")
+			{
+				lkKey = "remind:" + rid + ":" + ifnull(r.get("expiryversion"), "1");
+				lkReq = rid;
+				// @include lib/lock.dg
+				if(lkOk)
+				{
+					nTo = r.get("requesterid");
+					nMsg = {"text":"Your access to *" + rd.get("ch") + "* ends at " + ex.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST. Need longer? Send me *my access* to ask for more time (an admin has to approve it) or to end it now.\nRequest `" + rid + "`","card":{"title":"Access ending soon","theme":"modern-inline"}};
+					nAudit = "[reminder] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + " ends " + ex.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+					// @include lib/notify.dg
+					swRm = zoho.cliq.updateRecord("jitrequests", r.get("id"), {"remindersent":true,"nextactionat":ex}, "jitaccess");
+					swLog.add(rid + ":remind:" + if(nSent, "sent", "dm_failed") + ":" + swRm.get("status"));
+				}
+				else
+				{
+					swLog.add(rid + ":remind:" + if(lkTaken, "already", lkErr));
+				}
+			}
+			else if(a == "stuck" || a == "stuckgrant")
+			{
+				// A removal or a grant stopped part-way (its handler died, or its last write was
+				// refused). Leave fresh ones alone: they may still be running. Older ones are
+				// settled against the members list, so access never sits untracked.
+				swAge = nowMs - ifnull(r.get("modified_time"), nowMs.toString()).toLong();
+				if(swAge > 10 * 60000)
+				{
+					mbOk = false;
+					mbIds = List();
+					if(tkAccess != "")
+					{
+						mbChannel = rd.get("chid");
+						mbToken = tkAccess;
+						// @include lib/members.dg
+					}
+					swIn = mbOk && mbIds.contains(r.get("requesterid"));
+					tId = r.get("id");
+					tSet = Map();
+					swEnded = false;
+					if(a == "stuck")
+					{
+						tFrom = "REVOCATION_IN_PROGRESS";
+						if(mbOk && !swIn)
+						{
+							tTo = if(ex <= nowMs, "EXPIRED_REVOKED", "REVOKED_EARLY");
+							swEnded = true;
+							swWhat = "removal had stopped part-way; confirmed not a member, closed";
+						}
+						else
+						{
+							tTo = "REVOCATION_FAILED";
+							tSet.put("attempts", ifnull(r.get("attempts"), "0").toLong() + 1);
+							tSet.put("nextactionat", nowMs);
+							swWhat = "removal had stopped part-way; not confirmed, will retry";
+						}
+					}
+					else
+					{
+						tFrom = "APPROVED_PENDING_GRANT";
+						swPosted = ifnull(rd.get("grantposted"), "").toString() == "true";
+						if(mbOk && swIn && swPosted)
+						{
+							// The add happened but was never recorded: track it now, so it ends.
+							tTo = "ACTIVE";
+							rd.put("grantedby", ifnull(rd.get("decider"), ""));
+							rd.put("grantedat", nowMs);
+							tSet.put("createdbybot", true);
+							tSet.put("data", rd.toString());
+							tSet.put("nextactionat", ex);
+							swWhat = "grant had stopped part-way; confirmed a member, now tracked until " + ex.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+						}
+						else if(mbOk && swIn)
+						{
+							tTo = "NOT_NEEDED";
+							swEnded = true;
+							swWhat = "grant had stopped before the add and they are already a member; nothing to track";
+						}
+						else
+						{
+							tTo = "GRANT_FAILED";
+							tSet.put("attempts", ifnull(r.get("attempts"), "0").toLong() + 1);
+							swWhat = "grant had stopped part-way" + if(mbOk, "; not a member, needs Retry or Close", "; members unreadable, needs Retry or Close");
+						}
+					}
+					// @include lib/transition.dg
+					if(tOk && swEnded)
+					{
+						ulKey = "open:" + r.get("reskey") + ":" + r.get("requesterid");
+						// @include lib/unlock.dg
+					}
+					nTo = "";
+					nMsg = Map();
+					nAudit = "[settled] " + rid + " " + rd.get("email") + " → " + rd.get("ch") + ": " + swWhat + if(tOk, "", " (record update failed: " + tErr + ")");
+					// @include lib/notify.dg
+					swLog.add(rid + ":" + a + ":" + tTo + ":" + tOk);
+				}
+			}
+			else
+			{
+				// Due early (e.g. a reminder time while an extension is pending): next look at expiry.
+				swRs = zoho.cliq.updateRecord("jitrequests", r.get("id"), {"nextactionat":ex}, "jitaccess");
+				swLog.add(rid + ":resched:" + swRs.get("status"));
+			}
+		}
+	}
+	// ------------------------------------------------------------- prune finished requests
+	// @include lib/prune.dg
+	swLog.add("pruned:" + prDone + if(prErr.size() > 0, ",errors:" + prErr.size(), ""));
+	info "SWEEP " + nowMs.toTime().toString("dd MMM HH:mm", tz) + " work=" + work.size() + " done=" + swDone + " " + swLog.toString(";");
+}

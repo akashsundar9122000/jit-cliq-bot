@@ -1,0 +1,13 @@
+// ---- lib/remindat.dg: when to remind someone that their access is about to end.
+// in:  raExp (expiry, ms), raNow (ms)        uses: hourMs, tzOffsetMs
+// out: raAt (ms; equals raExp when there is no time left for a separate reminder)
+// 24 hours before the end, or half-way through if the grant is shorter. Sweeps fire at IST
+// HH:00, so the time is floored to an IST hour — otherwise the reminder lands an hour late.
+raLead = min(24 * hourMs, (raExp - raNow) / 2);
+raAt = raExp - raLead;
+raAt = raAt - ((raAt + tzOffsetMs) % hourMs);
+if(raAt <= raNow)
+{
+	raAt = raExp;
+}
+// ---- end lib/remindat.dg

@@ -1,0 +1,45 @@
+// ---- lib/lock.dg: claim a single-use key. Exactly one caller can ever win a given key.
+// in:  lkKey, lkReq (request id, for pruning)        uses: nowMs
+// out: lkOk (true = this caller won), lkTaken (true = someone already holds it), lkErr
+// The unique key on jitlocks.lockkey is not enough on its own: two createRecord calls 2 ms
+// apart both succeeded (Phase 3, a double-clicked "Approve extension"). So the row is only a
+// place to claim; the claim is a conditional update — owner "none" → this caller's nonce —
+// which Cliq applies to one caller only (46 racers in 6 trials: always exactly one), and the
+// read-back says who that was. Rows from before this scheme have no owner and stay taken.
+lkOk = false;
+lkTaken = false;
+lkErr = "";
+lkNonce = randomNumber(100000, 999999) + "" + randomNumber(100000, 999999) + "" + nowMs;
+lkRes = zoho.cliq.createRecord("jitlocks", {"lockkey":lkKey,"reqid":lkReq,"createdat":nowMs,"owner":"none"}, "jitaccess");
+lkCode = ifnull(lkRes.get("code"), "");
+if(lkRes.get("status") != "SUCCESS" && lkCode != "platform_storage_unique_key_constraint_violated")
+{
+	lkErr = if(lkCode == "", "unknown", lkCode);
+}
+else
+{
+	lkClaim = zoho.cliq.updateRecords("jitlocks", "(lockkey==" + lkKey + ")&&(owner==none)", {"owner":lkNonce}, "jitaccess");
+	lkQ = Map();
+	lkQ.put("criteria", "lockkey==" + lkKey);
+	lkRead = zoho.cliq.getRecords("jitlocks", lkQ, "jitaccess");
+	if(lkRead.get("status") != "SUCCESS")
+	{
+		lkErr = "readback_failed:" + ifnull(lkRead.get("code"), "");
+	}
+	else
+	{
+		lkRows = lkRead.get("list");
+		for each lkR in lkRows
+		{
+			if(ifnull(lkR.get("owner"), "") == lkNonce)
+			{
+				lkOk = true;
+			}
+		}
+		if(!lkOk)
+		{
+			lkTaken = true;
+		}
+	}
+}
+// ---- end lib/lock.dg

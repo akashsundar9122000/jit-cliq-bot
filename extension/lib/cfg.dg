@@ -1,0 +1,52 @@
+// ---- lib/cfg.dg: load settings and OAuth client credentials.
+// out: cfgMaxHours, cfgPaused (bool), cfgAdmins (list of Cliq user ids), cfgClientId,
+//      cfgClientSecret, cfgRetainDays (finished requests kept this long), cfgRows (the raw
+//      config records, for the settings writer), cfgOk (false if the store could not be read)
+// Defaults apply when a key is absent, but a failed read is reported, not defaulted: a
+// silently-defaulted "paused" flag would let grants through during an emergency pause.
+cfgMaxHours = 720;
+cfgPaused = false;
+cfgAdmins = List();
+cfgClientId = "";
+cfgClientSecret = "";
+cfgRetainDays = 7;
+cfgRows = List();
+cfgOk = false;
+cfgQ = Map();
+cfgQ.put("limit", 100);
+cfgRes = zoho.cliq.getRecords("jitconfig", cfgQ, "jitaccess");
+if(cfgRes.get("status") == "SUCCESS")
+{
+	cfgOk = true;
+	cfgRows = cfgRes.get("list");
+	for each cfgRow in cfgRows
+	{
+		cfgKey = cfgRow.get("ckey");
+		cfgVal = ifnull(cfgRow.get("cvalue"), "");
+		if(cfgKey == "maxhours" && cfgVal.matches("[0-9]{1,5}"))
+		{
+			cfgMaxHours = cfgVal.toLong();
+		}
+		else if(cfgKey == "retaindays" && cfgVal.matches("[0-9]{1,3}"))
+		{
+			cfgRetainDays = cfgVal.toLong();
+		}
+		else if(cfgKey == "paused")
+		{
+			cfgPaused = cfgVal == "true";
+		}
+		else if(cfgKey == "admins" && cfgVal != "")
+		{
+			cfgAdmins = cfgVal.toList(",");
+		}
+		else if(cfgKey == "clientid")
+		{
+			cfgClientId = ifnull(cfgRow.get("csecret"), "");
+		}
+		else if(cfgKey == "clientsecret")
+		{
+			cfgClientSecret = ifnull(cfgRow.get("csecret"), "");
+		}
+	}
+}
+// ---- end lib/cfg.dg

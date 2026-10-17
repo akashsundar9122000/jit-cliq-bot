@@ -1,0 +1,173 @@
+{
+  "_comment": "Each entry is built from extension/<source> into dist/<id>.dg and deployed to <target> by scripts/deploy.mjs. Per-org ids (bot, the 24 hourly sweeps jitsweepa..x, the widget) live in extension/org.json, written by scripts/install.mjs. Scheduler names must be letters only or creation fails with a bare operation_failed.",
+  "bot": {
+    "unique_name": "jitaccessbot",
+    "name": "JIT Access Bot"
+  },
+  "functions": [
+    {
+      "name": "jitaction",
+      "function_type": "button",
+      "description": "JIT Access Bot buttons that open forms (request, change, reject, ask, answer, extend, manual review), cancel a request, or connect an approver."
+    },
+    {
+      "name": "jitform",
+      "function_type": "form",
+      "description": "JIT Access Bot forms: access request, ask for details, answer, reject."
+    },
+    {
+      "name": "jitgrant",
+      "function_type": "button",
+      "description": "JIT Access Bot Approve, Retry and Close buttons: decide, then add the requester and confirm it."
+    },
+    {
+      "name": "jitchange",
+      "function_type": "form",
+      "description": "JIT Access Bot Change & approve form: approve with a new end time, then add the requester."
+    },
+    {
+      "name": "jitend",
+      "function_type": "button",
+      "description": "JIT Access Bot buttons on live access: End access now, Retry removal, Mark resolved, Approve or Reject an extension."
+    },
+    {
+      "name": "jitactive",
+      "function_type": "form",
+      "description": "JIT Access Bot forms about live access: request more time, mark a failed removal for manual review."
+    },
+    {
+      "name": "jitconfirm",
+      "function_type": "form",
+      "description": "JIT Access widget confirmations: end access, cancel, retry removal, resolve, extension decisions."
+    },
+    {
+      "name": "jitwidget",
+      "function_type": "widget_button",
+      "description": "JIT Access widget buttons: open the confirmation form for the chosen action."
+    }
+  ],
+  "entries": [
+    {
+      "id": "selftest",
+      "source": "tests/selftest.dg",
+      "target": {
+        "kind": "spike_webhook"
+      }
+    },
+    {
+      "id": "bot-message",
+      "source": "bot/message.dg",
+      "target": {
+        "kind": "bot_handler",
+        "handler": "message_handler"
+      }
+    },
+    {
+      "id": "bot-welcome",
+      "source": "bot/welcome.dg",
+      "target": {
+        "kind": "bot_handler",
+        "handler": "welcome_handler"
+      }
+    },
+    {
+      "id": "fn-jitaction",
+      "source": "functions/jitaction.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitaction",
+        "handler": "button_handler"
+      }
+    },
+    {
+      "id": "fn-jitform",
+      "source": "functions/jitform.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitform",
+        "handler": "form_submit_handler"
+      }
+    },
+    {
+      "id": "fn-jitgrant",
+      "source": "functions/jitgrant.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitgrant",
+        "handler": "button_handler"
+      }
+    },
+    {
+      "id": "fn-jitchange",
+      "source": "functions/jitchange.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitchange",
+        "handler": "form_submit_handler"
+      }
+    },
+    {
+      "id": "fn-jitend",
+      "source": "functions/jitend.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitend",
+        "handler": "button_handler"
+      }
+    },
+    {
+      "id": "sweep",
+      "source": "schedulers/sweep.dg",
+      "target": {
+        "kind": "scheduler"
+      }
+    },
+    {
+      "id": "fn-jitactive",
+      "source": "functions/jitactive.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitactive",
+        "handler": "form_submit_handler"
+      }
+    },
+    {
+      "id": "fn-jitconfirm",
+      "source": "functions/jitconfirm.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitconfirm",
+        "handler": "form_submit_handler"
+      }
+    },
+    {
+      "id": "fn-jitwidget",
+      "source": "functions/jitwidget.dg",
+      "target": {
+        "kind": "function_handler",
+        "function": "jitwidget",
+        "handler": "widget_button_handler"
+      }
+    },
+    {
+      "id": "widget-tabs",
+      "source": "widget/tabs.dg",
+      "target": {
+        "kind": "widget_handler",
+        "handler": "dynamic_tabs_handler"
+      }
+    },
+    {
+      "id": "widget-view",
+      "source": "widget/view.dg",
+      "target": {
+        "kind": "widget_handler",
+        "handler": "dynamic_view_handler"
+      }
+    }
+  ],
+  "schedulers": [],
+  "widget": {
+    "name": "JIT Access"
+  }
+}

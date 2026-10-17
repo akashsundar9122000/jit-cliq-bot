@@ -1,0 +1,18 @@
+// ---- lib/unlock.dg: release a lock that guards an *open* condition (e.g. one open request
+// per person per channel) once that condition has ended. A decision lock is released only
+// when the decision's write failed — once a decision is recorded, its lock stays forever.
+// in:  ulKey        uses: -
+// Every row for the key goes: concurrent inserts can leave duplicates (see lib/lock.dg), and
+// one left behind would keep the condition "open" for ever.
+ulQ = Map();
+ulQ.put("criteria", "lockkey==" + ulKey);
+ulFind = zoho.cliq.getRecords("jitlocks", ulQ, "jitaccess");
+if(ulFind.get("status") == "SUCCESS")
+{
+	ulRows = ulFind.get("list");
+	for each ulR in ulRows
+	{
+		zoho.cliq.deleteRecord("jitlocks", ulR.get("id"), "jitaccess");
+	}
+}
+// ---- end lib/unlock.dg

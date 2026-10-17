@@ -1,0 +1,174 @@
+// ---- lib/decide.dg: an approver approves (optionally with a new end time) or rejects.
+// in:  dcReqId, dcAction ("approve" | "reject"), dcNewExpiry (ms, 0 = keep requested),
+//      dcNote (text, may be ""), uid, org, email (the clicking user, from the platform)
+//      uses: lib/token, lib/chinfo, lib/lock, lib/transition, lib/notify, lib/unlock
+// out: dcMsg (message map for the person who clicked), dcApproved (true once approved),
+//      dcReq (request record), dcData (its JSON), dcRes (resource record), dcToken (approver's)
+// Authorisation is decided here, on the server, from live data: a button's label or its
+// arguments prove nothing about who may press it.
+// The id comes from a form or button; anything but the real shape goes nowhere near a
+// criteria string or a lock key (a crafted ")&&(" could otherwise pick its own lock).
+if(!dcReqId.matches("R[0-9]{12}"))
+{
+	dcReqId = "R000000000000";
+}
+clIn = dcNote;
+// @include lib/clean.dg
+dcNote = clOut;
+dcMsg = Map();
+dcApproved = false;
+dcReq = Map();
+dcData = Map();
+dcRes = Map();
+dcToken = "";
+dcQ = Map();
+dcQ.put("criteria", "(orgid==" + org + ")&&(reqid==" + dcReqId + ")");
+dcFind = zoho.cliq.getRecords("jitrequests", dcQ, "jitaccess");
+if(dcFind.get("status") != "SUCCESS" || dcFind.get("list").size() == 0)
+{
+	// Not found and other-organisation look identical on purpose.
+	dcMsg = {"text":"I can't find that request."};
+}
+else
+{
+	dcReq = dcFind.get("list").get(0);
+	dcData = ifnull(dcReq.get("data"), "{}").toMap();
+	if(dcReq.get("status") != "PENDING_APPROVAL")
+	{
+		dcMsg = {"text":"This request for " + dcData.get("ch") + " is already *" + ifnull(statusWords.get(dcReq.get("status")), dcReq.get("status")) + "*. Nothing changed."};
+	}
+	else if(dcReq.get("requesterid") == uid)
+	{
+		dcMsg = {"text":"You can't decide your own request. Another admin of " + dcData.get("ch") + " has to."};
+	}
+	else
+	{
+		dcRQ = Map();
+		dcRQ.put("criteria", "(orgid==" + org + ")&&(reskey==" + dcReq.get("reskey") + ")");
+		dcRFind = zoho.cliq.getRecords("jitresources", dcRQ, "jitaccess");
+		if(dcRFind.get("status") == "SUCCESS" && dcRFind.get("list").size() > 0)
+		{
+			dcRes = dcRFind.get("list").get(0);
+		}
+		tkUser = uid;
+		// @include lib/token.dg
+		if(dcRes.get("channelid") == null)
+		{
+			dcMsg = {"text":"The channel for this request is no longer enrolled, so I can't act on it."};
+		}
+		else if(tkAccess == "")
+		{
+			dcMsg = {"text":"Before you can decide, I need to be able to add and remove members as you (one-time). Press *Connect*, then press the request's button again.","buttons":{{"label":"Connect","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"connect|-"}}}};
+		}
+		else
+		{
+			dcToken = tkAccess;
+			ciChannel = dcRes.get("channelid");
+			ciToken = tkAccess;
+			// @include lib/chinfo.dg
+			if(!ciIsAdmin)
+			{
+				dcMsg = {"text":"Only an admin of " + dcData.get("ch") + " can decide this request. I checked just now and you are not one."};
+				nTo = "";
+				nMsg = Map();
+				nAudit = "[denied] " + email + " tried to " + dcAction + " " + dcReqId + " for " + dcData.get("ch") + " but is not a channel admin (role: " + ifnull(ciRole, ciErr) + ")";
+				// @include lib/notify.dg
+			}
+			else
+			{
+				lkKey = "decide:" + dcReqId;
+				lkReq = dcReqId;
+				// @include lib/lock.dg
+				if(lkTaken)
+				{
+					dcMsg = {"text":"This request was decided a moment ago. Nothing changed."};
+				}
+				else if(!lkOk)
+				{
+					dcMsg = {"text":"I couldn't record your decision (" + lkErr + "). Please press the button again."};
+				}
+				else
+				{
+					dcData.put("decider", uid);
+					dcData.put("decideremail", email);
+					if(dcNote != "")
+					{
+						dcData.put("note", dcNote.subString(0, min(150, dcNote.length())));
+					}
+					tSet = Map();
+					tSet.put("data", dcData.toString());
+					dcOldExpiry = ifnull(dcReq.get("expiresat"), "0").toLong();
+					if(dcNewExpiry > 0)
+					{
+						tSet.put("expiresat", dcNewExpiry);
+					}
+					tId = dcReq.get("id");
+					tFrom = "PENDING_APPROVAL";
+					tTo = "APPROVED_PENDING_GRANT";
+					if(dcAction == "reject")
+					{
+						tTo = "REJECTED";
+					}
+					// @include lib/transition.dg
+					if(!tOk)
+					{
+						// Nothing was decided, so give the lock back; kept, it would make the
+						// request impossible to decide or cancel ever again.
+						ulKey = lkKey;
+						// @include lib/unlock.dg
+						dcMsg = {"text":"I couldn't record your decision (" + tErr + "). Nothing changed."};
+					}
+					else
+					{
+						dcReq = tRec;
+						dcExp = ifnull(dcReq.get("expiresat"), "0").toLong();
+						dcUntil = dcExp.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+						dcOthers = List();
+						dcAll = ifnull(dcData.get("approvers"), "").toList(",");
+						for each dcA in dcAll
+						{
+							if(dcA != uid && dcA != "")
+							{
+								dcOthers.add(dcA);
+							}
+						}
+						if(dcAction == "reject")
+						{
+							ulKey = "open:" + dcReq.get("reskey") + ":" + dcReq.get("requesterid");
+							// @include lib/unlock.dg
+							nTo = dcReq.get("requesterid");
+							nMsg = {"text":"Your request for " + dcData.get("ch") + " was *rejected* by " + email + "." + if(dcNote != "", "\nReason: " + dcNote, "") + "\nRequest `" + dcReqId + "`","card":{"title":"Request rejected","theme":"modern-inline"}};
+							nAudit = "[rejected] " + dcReqId + " " + dcData.get("ch") + " for " + dcData.get("email") + " by " + email;
+							// @include lib/notify.dg
+							dcMsg = {"text":"Rejected. I've told " + dcData.get("email") + "."};
+						}
+						else
+						{
+							dcApproved = true;
+							dcChanged = "";
+							if(dcNewExpiry > 0 && dcNewExpiry != dcOldExpiry)
+							{
+								dcChanged = " (end time changed by the approver from " + dcOldExpiry.toTime().toString("EEE dd MMM, hh:mm a", tz) + ")";
+							}
+							// The request form promised a message when they decide; Phase 2's
+							// grant step sends the "you're in" confirmation separately.
+							nTo = dcReq.get("requesterid");
+							nMsg = {"text":"Your request for " + dcData.get("ch") + " was *approved* by " + email + ", until " + dcUntil + dcChanged + "." + if(dcNote != "", "\nNote: " + dcNote, "") + "\nI'm adding you now.\nRequest `" + dcReqId + "`","card":{"title":"Request approved","theme":"modern-inline"}};
+							nAudit = "[approved] " + dcReqId + " " + dcData.get("ch") + " for " + dcData.get("email") + " until " + dcUntil + dcChanged + " by " + email;
+							// @include lib/notify.dg
+							dcMsg = {"text":"Approved " + dcData.get("email") + " for " + dcData.get("ch") + " until " + dcUntil + dcChanged + "."};
+						}
+						if(dcOthers.size() > 0)
+						{
+							nTo = dcOthers.toString(",");
+							nMsg = {"text":"Request `" + dcReqId + "` (" + dcData.get("email") + " → " + dcData.get("ch") + ") was " + if(dcAction == "reject", "rejected", "approved") + " by " + email + ". No action needed."};
+							nAudit = "";
+							// @include lib/notify.dg
+						}
+					}
+				}
+			}
+		}
+	}
+}
+// ---- end lib/decide.dg

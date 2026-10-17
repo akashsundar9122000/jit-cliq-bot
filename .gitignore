@@ -6,3 +6,5 @@ dist/
 !.env.example
 *.local
 scratch/
+# Per-org deployment ids (scripts/install.mjs)
+extension/org.json

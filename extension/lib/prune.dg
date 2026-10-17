@@ -1,0 +1,75 @@
+// ---- lib/prune.dg: delete finished requests (and their lock rows) once they are old enough.
+// in:  org, nowMs, hourMs, cfgRetainDays        uses: lib/notify
+// out: prDone (requests deleted), prErr (list of failures)
+// The org's datastores share a 1,000-record cap, and every request leaves 3–6 lock rows, so
+// history cannot stay in the store. Each state change was already posted to the audit
+// channel when it happened, which is where history lives.
+prDone = 0;
+prErr = List();
+prCut = nowMs - cfgRetainDays * 24 * hourMs;
+prStates = {"REJECTED","CANCELLED","NOT_NEEDED","EXPIRED_REVOKED","REVOKED_EARLY","CLOSED_MANUAL"};
+for each prSt in prStates
+{
+	prQ = Map();
+	prQ.put("criteria", "(orgid==" + org + ")&&(status==" + prSt + ")");
+	prQ.put("limit", 50);
+	prF = zoho.cliq.getRecords("jitrequests", prQ, "jitaccess");
+	if(prF.get("status") == "SUCCESS")
+	{
+		prList = prF.get("list");
+		for each prR in prList
+		{
+			// A cap keeps one run inside Deluge's limits; the rest go next hour.
+			if(prDone < 30 && ifnull(prR.get("modified_time"), nowMs.toString()).toLong() <= prCut)
+			{
+				// Locks first: if the request went first, a failed lock delete would leave a
+				// row that nothing would ever find again.
+				prLQ = Map();
+				prLQ.put("criteria", "reqid==" + prR.get("reqid"));
+				prLQ.put("limit", 50);
+				prLF = zoho.cliq.getRecords("jitlocks", prLQ, "jitaccess");
+				prLocksOk = prLF.get("status") == "SUCCESS";
+				if(prLocksOk)
+				{
+					prLocks = prLF.get("list");
+					for each prL in prLocks
+					{
+						prLD = zoho.cliq.deleteRecord("jitlocks", prL.get("id"), "jitaccess");
+						if(ifnull(prLD.get("status"), "").toUpperCase() != "SUCCESS")
+						{
+							prLocksOk = false;
+						}
+					}
+				}
+				if(prLocksOk)
+				{
+					prD = zoho.cliq.deleteRecord("jitrequests", prR.get("id"), "jitaccess");
+					if(ifnull(prD.get("status"), "").toUpperCase() == "SUCCESS")
+					{
+						prDone = prDone + 1;
+					}
+					else
+					{
+						prErr.add(prR.get("reqid") + ":" + ifnull(prD.get("code"), "?"));
+					}
+				}
+				else
+				{
+					prErr.add(prR.get("reqid") + ":locks");
+				}
+			}
+		}
+	}
+	else
+	{
+		prErr.add(prSt + ":query:" + ifnull(prF.get("code"), ""));
+	}
+}
+if(prDone > 0 || prErr.size() > 0)
+{
+	nTo = "";
+	nMsg = Map();
+	nAudit = "[pruned] " + prDone + " finished request(s) older than " + cfgRetainDays + " day(s) removed from the store" + if(prErr.size() > 0, "; failed: " + prErr.toString(", "), "");
+	// @include lib/notify.dg
+}
+// ---- end lib/prune.dg

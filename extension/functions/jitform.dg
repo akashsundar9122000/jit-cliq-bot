@@ -1,0 +1,387 @@
+// JIT Access Bot — form submit handler (function `jitform`). Every form posts here; the
+// form's name says which. Nothing a form carries is trusted: the resource, membership,
+// limits and the actor's authority are all re-checked from live data.
+// @include lib/config.dg
+// @include lib/cfg.dg
+uid = user.get("id").toString();
+org = user.get("organization_id").toString();
+email = ifnull(user.get("email"), "");
+fname = form.get("name");
+fv = form.get("values");
+// Forms opened from the JIT Access widget say so; their replies must be banners.
+rpWidget = ifnull(fv.get("origin"), "").toString() == "widget";
+// Select inputs arrive as {label, value} maps and datetime inputs as {date_time,
+// time_zone_id}; plain inputs arrive as text. Normalise both here.
+durChoice = "";
+durRaw = fv.get("duration");
+if(durRaw != null)
+{
+	durChoice = durRaw.toString();
+	if(durChoice.startsWith("{"))
+	{
+		durChoice = durChoice.toMap().get("value");
+	}
+}
+untilMs = 0;
+untilRaw = fv.get("until");
+if(untilRaw != null && untilRaw.toString() != "")
+{
+	untilMap = untilRaw.toString().toMap();
+	untilStr = ifnull(untilMap.get("date_time"), "");
+	untilTz = ifnull(untilMap.get("time_zone_id"), tz);
+	if(untilStr.length() == 16)
+	{
+		untilMs = untilStr.toTime("yyyy-MM-dd'T'HH:mm", untilTz).toLong();
+	}
+	else if(untilStr.length() >= 19)
+	{
+		untilMs = untilStr.subString(0, 19).toTime("yyyy-MM-dd'T'HH:mm:ss", untilTz).toLong();
+	}
+}
+if(!cfgOk)
+{
+	return {"type":"form_error","text":"I can't read my settings right now. Please try again in a few minutes."};
+}
+// ------------------------------------------------------------------ new access request
+if(fname == "jitrequest")
+{
+	if(cfgPaused)
+	{
+		return {"type":"form_error","text":"Temporary access requests are paused by an administrator right now."};
+	}
+	clIn = fv.get("reason");
+	// @include lib/clean.dg
+	reason = clOut;
+	if(reason.length() < 5)
+	{
+		return {"type":"form_error","text":"Please say why you need access.","inputs":{"reason":"At least a few words, please."}};
+	}
+	if(reason.length() > 200)
+	{
+		reason = reason.subString(0, 200);
+	}
+	rq = Map();
+	fReskey = ifnull(fv.get("reskey"), "-").toString();
+	if(!fReskey.matches("cliqch:P[0-9]{6,25}"))
+	{
+		fReskey = "-";
+	}
+	rq.put("criteria", "(orgid==" + org + ")&&(reskey==" + fReskey + ")");
+	rFind = zoho.cliq.getRecords("jitresources", rq, "jitaccess");
+	if(rFind.get("status") != "SUCCESS" || rFind.get("list").size() == 0)
+	{
+		return {"type":"form_error","text":"That channel is no longer set up for temporary access."};
+	}
+	res = rFind.get("list").get(0);
+	rdata = ifnull(res.get("data"), "{}").toMap();
+	if(rdata.get("status") != "active")
+	{
+		return {"type":"form_error","text":"Temporary access to that channel was switched off by its admins."};
+	}
+	chName = rdata.get("name");
+	maxH = cfgMaxHours;
+	resMax = ifnull(res.get("maxhours"), "0").toLong();
+	if(resMax > 0 && resMax < maxH)
+	{
+		maxH = resMax;
+	}
+	dChoice = durChoice;
+	dCustomMs = untilMs;
+	dNow = nowMs;
+	dMaxHours = maxH;
+	// @include lib/duration.dg
+	if(dError != "")
+	{
+		return {"type":"form_error","text":dError};
+	}
+	tkUser = rdata.get("enrolledby");
+	// @include lib/token.dg
+	if(tkAccess == "")
+	{
+		return {"type":"form_error","text":"I can't reach " + chName + ": its admin's connection lapsed. Ask a channel admin to send me *connect*."};
+	}
+	mbChannel = res.get("channelid");
+	mbToken = tkAccess;
+	// @include lib/members.dg
+	if(!mbOk)
+	{
+		return {"type":"form_error","text":"I couldn't read " + chName + "'s members just now. Please try again."};
+	}
+	if(mbIds.contains(uid))
+	{
+		return {"type":"form_error","text":"You're already a member of " + chName + "."};
+	}
+	approvers = List();
+	for each a in mbAdmins
+	{
+		if(a != uid && approvers.size() < 10)
+		{
+			approvers.add(a);
+		}
+	}
+	if(approvers.size() == 0)
+	{
+		return {"type":"form_error","text":chName + " has no admin who could approve this."};
+	}
+	// A cap per person per day: the org's datastores share 1,000 records, and a script filling
+	// them with request/cancel cycles would stop every lock — removals included.
+	capQ = Map();
+	capQ.put("criteria", "(orgid==" + org + ")&&(requesterid==" + uid + ")&&(createdat>=" + (nowMs - 24 * hourMs) + ")");
+	capQ.put("limit", 20);
+	capF = zoho.cliq.getRecords("jitrequests", capQ, "jitaccess");
+	if(capF.get("status") != "SUCCESS")
+	{
+		return {"type":"form_error","text":"I couldn't check your recent requests just now. Please try again."};
+	}
+	if(capF.get("list").size() >= 10)
+	{
+		return {"type":"form_error","text":"You've made 10 requests in the last 24 hours. Please wait, or ask a channel admin."};
+	}
+	// One open request per person per channel. The lock is released when the request
+	// ends, whatever way it ends.
+	reqId = "R" + randomNumber(100000, 999999) + randomNumber(100000, 999999);
+	lkKey = "open:" + res.get("reskey") + ":" + uid;
+	lkReq = reqId;
+	// @include lib/lock.dg
+	if(lkTaken)
+	{
+		return {"type":"form_error","text":"You already have an open request or active access for " + chName + ". Send *my access* to see it."};
+	}
+	if(!lkOk)
+	{
+		return {"type":"form_error","text":"I couldn't save your request (" + lkErr + "). Please try again."};
+	}
+	durLabel = durChoice;
+	if(durChoice == "custom")
+	{
+		durLabel = "until chosen time";
+	}
+	rdat = {"ch":chName,"chid":res.get("channelid"),"email":email,"reason":reason,"dur":durLabel,"approvers":approvers.toString(",")};
+	// Approval, a note, the grant and an extension each add to this record, which Cliq
+	// rejects whole past 1,000 characters — a rejection after the add would strand access.
+	if(rdat.toString().length() > 550)
+	{
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		return {"type":"form_error","text":"Please shorten your reason.","inputs":{"reason":"Too long once saved — try a shorter reason."}};
+	}
+	newRec = {"reqid":reqId,"orgid":org,"status":"PENDING_APPROVAL","requesterid":uid,"reskey":res.get("reskey"),"expiresat":dExpires,"nextactionat":nowMs + 72 * hourMs,"expiryversion":1,"attempts":0,"createdat":nowMs,"createdbybot":false,"remindersent":false,"data":rdat.toString()};
+	cw = zoho.cliq.createRecord("jitrequests", newRec, "jitaccess");
+	if(cw.get("status") != "SUCCESS")
+	{
+		ulKey = lkKey;
+		// @include lib/unlock.dg
+		return {"type":"form_error","text":"I couldn't save your request (" + ifnull(cw.get("code"), "error") + "). Please try again."};
+	}
+	until = dExpires.toTime().toString("EEE dd MMM, hh:mm a", tz) + " IST";
+	nTo = approvers.toString(",");
+	nMsg = {"text":"*" + email + "* asks for temporary access to *" + chName + "*\n*Until:* " + until + "\n*Reason:* " + reason + "\nRequest `" + reqId + "`","card":{"title":"Access request","theme":"modern-inline"},"buttons":{{"label":"Approve","type":"+","action":{"type":"invoke.function","data":{"name":"jitgrant"}},"arguments":{"key":"approve|" + reqId}},{"label":"Change & approve","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"change|" + reqId}},{"label":"Ask for details","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"ask|" + reqId}},{"label":"Reject","type":"-","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"reject|" + reqId}}}};
+	nAudit = "[request] " + reqId + " " + email + " → " + chName + " until " + until + " | approvers: " + approvers.size();
+	// @include lib/notify.dg
+	if(!nSent)
+	{
+		return {"type":"form_error","text":"I saved your request but couldn't reach " + chName + "'s admins. Request `" + reqId + "` — please tell an admin directly."};
+	}
+	return {"text":"Sent to " + approvers.size() + " admin(s) of " + chName + " for approval. Access would last until " + until + ". I'll message you when they decide.\nRequest `" + reqId + "`","buttons":{{"label":"Cancel request","type":"-","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"cancel|" + reqId}}}};
+}
+// ------------------------------------------------------------------ questions and answers
+// A question leaves the request pending and takes no lock: asking is not deciding, and a
+// lock taken here would make the request impossible to approve afterwards.
+if(fname == "jitask" || fname == "jitreply")
+{
+	qaId = ifnull(fv.get("reqid"), "-").toString();
+	if(!qaId.matches("R[0-9]{12}"))
+	{
+		qaId = "R000000000000";
+	}
+	clIn = fv.get("note");
+	// @include lib/clean.dg
+	qaNote = clOut;
+	if(qaNote.length() < 2)
+	{
+		return {"type":"form_error","text":"Please write a few words.","inputs":{"note":"Too short."}};
+	}
+	qaNote = qaNote.subString(0, min(200, qaNote.length()));
+	qaQ = Map();
+	qaQ.put("criteria", "(orgid==" + org + ")&&(reqid==" + qaId + ")");
+	qaFind = zoho.cliq.getRecords("jitrequests", qaQ, "jitaccess");
+	if(qaFind.get("status") != "SUCCESS" || qaFind.get("list").size() == 0)
+	{
+		return {"type":"form_error","text":"I can't find that request."};
+	}
+	qaReq = qaFind.get("list").get(0);
+	qaData = ifnull(qaReq.get("data"), "{}").toMap();
+	if(qaReq.get("status") != "PENDING_APPROVAL")
+	{
+		return {"type":"form_error","text":"This request is already " + ifnull(statusWords.get(qaReq.get("status")), qaReq.get("status")) + "."};
+	}
+	if(fname == "jitreply")
+	{
+		if(qaReq.get("requesterid") != uid)
+		{
+			return {"type":"form_error","text":"Only the person who asked can answer this."};
+		}
+		nTo = ifnull(qaData.get("approvers"), "");
+		nMsg = {"text":"*" + email + "* answered about request `" + qaId + "` (" + qaData.get("ch") + "):\n" + qaNote,"card":{"title":"Requester's answer","theme":"modern-inline"},"buttons":{{"label":"Approve","type":"+","action":{"type":"invoke.function","data":{"name":"jitgrant"}},"arguments":{"key":"approve|" + qaId}},{"label":"Change & approve","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"change|" + qaId}},{"label":"Reject","type":"-","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"reject|" + qaId}}}};
+		nAudit = "[answered] " + qaId + " " + qaData.get("ch") + " by requester " + email;
+		// @include lib/notify.dg
+		return {"text":"Sent your answer to the admins of " + qaData.get("ch") + "."};
+	}
+	// The question goes out in the bot's name, so the asker must be an admin of the channel
+	// now — not merely someone who was one when the request was made.
+	qaRQ = Map();
+	qaRQ.put("criteria", "(orgid==" + org + ")&&(reskey==" + qaReq.get("reskey") + ")");
+	qaRFind = zoho.cliq.getRecords("jitresources", qaRQ, "jitaccess");
+	qaChan = "";
+	if(qaRFind.get("status") == "SUCCESS" && qaReq.get("requesterid") != uid)
+	{
+		if(qaRFind.get("list").size() > 0)
+		{
+			qaChan = qaRFind.get("list").get(0).get("channelid");
+		}
+	}
+	if(qaChan == "")
+	{
+		return {"type":"form_error","text":"Only an admin of " + qaData.get("ch") + " can ask about this request."};
+	}
+	tkUser = uid;
+	// @include lib/token.dg
+	if(tkAccess == "")
+	{
+		return {"type":"form_error","text":"Before you can act on requests, send me *connect* (one-time)."};
+	}
+	ciChannel = qaChan;
+	ciToken = tkAccess;
+	// @include lib/chinfo.dg
+	if(!ciIsAdmin)
+	{
+		return {"type":"form_error","text":"Only an admin of " + qaData.get("ch") + " can ask about this request. I checked just now and you are not one."};
+	}
+	nTo = qaReq.get("requesterid");
+	nMsg = {"text":"An admin of *" + qaData.get("ch") + "* (" + email + ") has a question about your request `" + qaId + "`:\n" + qaNote,"card":{"title":"Question about your request","theme":"modern-inline"},"buttons":{{"label":"Answer","type":"+","action":{"type":"invoke.function","data":{"name":"jitaction"}},"arguments":{"key":"reply|" + qaId}}}};
+	nAudit = "[asked] " + qaId + " " + qaData.get("ch") + " by " + email;
+	// @include lib/notify.dg
+	if(!nSent)
+	{
+		return {"type":"form_error","text":"I couldn't reach the requester just now. Please try again."};
+	}
+	return {"text":"Asked " + qaData.get("email") + ". Their answer will come to you here; the request stays open."};
+}
+// ------------------------------------------------------------------ settings (org admins)
+if(fname == "jitsettings")
+{
+	// Read from the platform at submit time, not from anything the form carries.
+	if(user.get("admin") != true)
+	{
+		return {"type":"form_error","text":"Only Cliq org admins can change JIT Access settings."};
+	}
+	want = Map();
+	sKeys = {"maxhours","paused","retaindays","alerts"};
+	boolWords = {"true","false"};
+	for each sk in sKeys
+	{
+		sv = ifnull(fv.get(sk), "").toString();
+		if(sv.startsWith("{"))
+		{
+			sv = sv.toMap().get("value");
+		}
+		want.put(sk, sv);
+	}
+	if(!want.get("maxhours").matches("[0-9]{1,4}") || !want.get("retaindays").matches("[0-9]{1,3}") || !boolWords.contains(want.get("paused")))
+	{
+		return {"type":"form_error","text":"Choose a value for every setting."};
+	}
+	// A copy: changing cfgAdmins itself would make "before" equal "after" below.
+	have = {"maxhours":cfgMaxHours.toString(),"paused":cfgPaused.toString(),"retaindays":cfgRetainDays.toString(),"admins":cfgAdmins.toString(",")};
+	alertIds = List();
+	alertIds.addAll(cfgAdmins);
+	if(want.get("alerts") == "add" && !alertIds.contains(uid))
+	{
+		alertIds.add(uid);
+	}
+	else if(want.get("alerts") == "remove")
+	{
+		alertIds.removeElement(uid);
+	}
+	want.put("admins", alertIds.toString(","));
+	want.remove("alerts");
+	changed = List();
+	failed = List();
+	for each sk in want.keys()
+	{
+		if(want.get(sk) != have.get(sk))
+		{
+			sRow = Map();
+			for each cr in cfgRows
+			{
+				if(cr.get("ckey") == sk)
+				{
+					sRow = cr;
+				}
+			}
+			sVals = {"cvalue":want.get(sk),"updatedat":nowMs,"updatedby":email};
+			if(sRow.get("id") != null)
+			{
+				sW = zoho.cliq.updateRecord("jitconfig", sRow.get("id"), sVals, "jitaccess");
+			}
+			else
+			{
+				sVals.put("ckey", sk);
+				sVals.put("csecret", "");
+				sW = zoho.cliq.createRecord("jitconfig", sVals, "jitaccess");
+			}
+			// The stored record, not the status, says whether the value took.
+			sStored = "";
+			if(sW.get("status") == "SUCCESS")
+			{
+				sStored = ifnull(sW.get("object").get("cvalue"), "");
+			}
+			if(sStored == want.get(sk))
+			{
+				changed.add(sk + " " + have.get(sk) + "→" + want.get(sk));
+			}
+			else
+			{
+				failed.add(sk + " (" + ifnull(sW.get("code"), "error") + ")");
+			}
+		}
+	}
+	if(changed.size() > 0)
+	{
+		nTo = "";
+		nMsg = Map();
+		if(want.get("paused") != have.get("paused"))
+		{
+			// Everyone who gets alerts hears about a pause, whoever set it.
+			nTo = alertIds.toString(",");
+			nMsg = {"text":"JIT Access was *" + if(want.get("paused") == "true", "paused", "resumed") + "* by " + email + "." + if(want.get("paused") == "true", " No new requests, approvals, grant retries or extensions until it is resumed. Removals carry on as normal.", " Requests and approvals work again."),"card":{"title":"JIT Access " + if(want.get("paused") == "true", "paused", "resumed"),"theme":"modern-inline"}};
+		}
+		nAudit = "[settings] " + email + ": " + changed.toString(", ");
+		// @include lib/notify.dg
+	}
+	if(failed.size() > 0)
+	{
+		return {"type":"form_error","text":"Some settings were not saved: " + failed.toString(", ") + ". Please try again."};
+	}
+	rpMsg = {"text":if(changed.size() == 0, "Nothing changed.", "Saved: " + changed.toString(", ") + ".")};
+	// @include lib/reply.dg
+	return rpOut;
+}
+// ------------------------------------------------------------------ decisions from forms
+// Reject only: "Change & approve" posts to its own function, jitchange, because it also grants.
+dcReqId = ifnull(fv.get("reqid"), "-");
+dcNote = ifnull(fv.get("note"), "").trim();
+dcNewExpiry = 0;
+dcAction = "";
+if(fname == "jitreject")
+{
+	dcAction = "reject";
+}
+if(dcAction == "")
+{
+	return {"type":"form_error","text":"I don't recognise that form."};
+}
+// @include lib/decide.dg
+rpMsg = dcMsg;
+// @include lib/reply.dg
+return rpOut;
