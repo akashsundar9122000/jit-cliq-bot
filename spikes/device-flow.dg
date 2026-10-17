@@ -1,0 +1,102 @@
+// jit-spike: can the bot hold a channel owner's own OAuth grant, so that work done
+// later from a scheduler (whose identity is its creator) still runs as the owner?
+// Zoho's device flow needs no redirect URL: the owner approves a short code at
+// accounts.zoho.in, then the bot exchanges the device code for a refresh token.
+// Tokens are never returned in output; only their presence and lengths are reported.
+acc = "https://accounts.zoho.in";
+payload = body.toMap();
+mode = payload.get("mode");
+out = Map();
+out.put("mode", mode);
+q = Map();
+q.put("criteria", "kind==client");
+cl = zoho.cliq.getRecords("jitspikeauth", q, "jitaccess");
+if(cl.get("status") != "SUCCESS" || cl.get("list").size() == 0)
+{
+	return {"text":"NO_CLIENT " + cl.toString()};
+}
+clientId = cl.get("list").get(0).get("secret");
+clientSecret = cl.get("list").get(0).get("secretb");
+if(mode == "start")
+{
+	r = invokeurl
+	[
+		url :acc + "/oauth/v3/device/code"
+		type :POST
+		parameters:{"client_id":clientId,"scope":"ZohoCliq.Channels.READ,ZohoCliq.Channels.UPDATE","grant_type":"device_request","access_type":"offline"}
+	];
+	dc = r.get("device_code");
+	out.put("response_keys", r.keys());
+	out.put("user_code", r.get("user_code"));
+	out.put("verification_url", r.get("verification_url"));
+	out.put("verification_uri_complete", r.get("verification_uri_complete"));
+	out.put("expires_in", r.get("expires_in"));
+	out.put("interval", r.get("interval"));
+	out.put("error", r.get("error"));
+	if(dc != null)
+	{
+		old = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==device"}, "jitaccess");
+		if(old.get("status") == "SUCCESS" && old.get("list").size() > 0)
+		{
+			zoho.cliq.deleteRecord("jitspikeauth", old.get("list").get(0).get("id"), "jitaccess");
+		}
+		out.put("stored", zoho.cliq.createRecord("jitspikeauth", {"kind":"device","secret":dc,"meta":"device code"}, "jitaccess").get("status"));
+	}
+}
+else if(mode == "poll")
+{
+	dv = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==device"}, "jitaccess");
+	dc = dv.get("list").get(0).get("secret");
+	t = invokeurl
+	[
+		url :acc + "/oauth/v3/device/token"
+		type :POST
+		parameters:{"client_id":clientId,"client_secret":clientSecret,"grant_type":"device_token","code":dc}
+	];
+	out.put("token_keys", t.keys());
+	out.put("error", t.get("error"));
+	rt = t.get("refresh_token");
+	out.put("has_refresh_token", rt != null);
+	out.put("scope", t.get("scope"));
+	out.put("api_domain", t.get("api_domain"));
+	if(rt != null)
+	{
+		// Whose token is this? Ask Cliq, rather than assume it is whoever clicked.
+		at = t.get("access_token");
+		who = invokeurl
+		[
+			url :"https://cliq.zoho.in/api/v2/channels/P1207169000000141002"
+			type :GET
+			headers:{"Authorization":"Zoho-oauthtoken " + at}
+		];
+		out.put("probe_current_user_role", who.get("current_user_role"));
+		old = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==owner"}, "jitaccess");
+		if(old.get("status") == "SUCCESS" && old.get("list").size() > 0)
+		{
+			zoho.cliq.deleteRecord("jitspikeauth", old.get("list").get(0).get("id"), "jitaccess");
+		}
+		out.put("stored", zoho.cliq.createRecord("jitspikeauth", {"kind":"owner","secret":rt,"meta":"owner refresh token"}, "jitaccess").get("status"));
+	}
+}
+else if(mode == "use")
+{
+	ow = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==owner"}, "jitaccess");
+	rt = ow.get("list").get(0).get("secret");
+	t = invokeurl
+	[
+		url :acc + "/oauth/v2/token"
+		type :POST
+		parameters:{"client_id":clientId,"client_secret":clientSecret,"grant_type":"refresh_token","refresh_token":rt}
+	];
+	out.put("refresh_error", t.get("error"));
+	at = t.get("access_token");
+	out.put("has_access_token", at != null);
+	m = invokeurl
+	[
+		url :"https://cliq.zoho.in/api/v2/channels/P1207169000000141002/members"
+		type :GET
+		headers:{"Authorization":"Zoho-oauthtoken " + at}
+	];
+	out.put("members", m);
+}
+return {"text":out.toString()};

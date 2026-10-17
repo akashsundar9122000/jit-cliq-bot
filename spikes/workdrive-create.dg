@@ -1,0 +1,53 @@
+// jit-spike: create disposable test resources owned by the connection owner:
+// a folder and a Writer doc in My Folders, and a private team folder with a doc.
+// Bodies are built as variables: nested map literals inside invokeurl do not parse.
+wd = "https://www.zohoapis.in/workdrive/api/v1";
+hdr = {"Accept":"application/vnd.api+json","Content-Type":"application/json"};
+myFolders = "a68brf21b237a86a34ca5b44d9bbc0ab9f40a";
+teamId = "a68br548f44d053aa43f690d496174dd10943";
+out = Map();
+b1 = {"data":{"type":"files","attributes":{"name":"jit-spike-folder","parent_id":myFolders}}};
+f1 = invokeurl
+[
+	url :wd + "/files"
+	type :POST
+	parameters:b1.toString()
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("folder", f1);
+b2 = {"data":{"type":"files","attributes":{"name":"jit-spike-doc","service_type":"zw","parent_id":myFolders}}};
+d1 = invokeurl
+[
+	url :wd + "/files"
+	type :POST
+	parameters:b2.toString()
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("doc", d1);
+b3 = {"data":{"type":"workspaces","attributes":{"name":"jit-spike-team","parent_id":teamId,"is_public_within_team":"false","description":"jit-spike: disposable JIT test team folder"}}};
+ws = invokeurl
+[
+	url :wd + "/workspaces"
+	type :POST
+	parameters:b3.toString()
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("teamfolder", ws);
+wsData = ws.get("data");
+if(wsData != null)
+{
+	b4 = {"data":{"type":"files","attributes":{"name":"jit-spike-team-doc","service_type":"zw","parent_id":wsData.get("id")}}};
+	d2 = invokeurl
+	[
+		url :wd + "/files"
+		type :POST
+		parameters:b4.toString()
+		headers:hdr
+		connection:"jitworkdrive"
+	];
+	out.put("teamdoc", d2);
+}
+return {"text":out.toString()};

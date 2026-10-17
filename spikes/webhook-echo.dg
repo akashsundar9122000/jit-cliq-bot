@@ -1,0 +1,10 @@
+// jit-spike: report what an incoming-webhook handler can see, to decide what the
+// scheduler/webhook runtime knows about identity and organisation.
+out = Map();
+out.put("user", user);
+out.put("body", body);
+out.put("params", params);
+out.put("now_ms", zoho.currenttime.toLong());
+out.put("now_str", zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss"));
+info out;
+return {"text":"spike-echo " + out.toString()};

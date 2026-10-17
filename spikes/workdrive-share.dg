@@ -1,0 +1,97 @@
+// jit-spike: the WorkDrive JIT cycle on one file. Every write is followed by a read
+// of the permission list, because the write's own response is not proof.
+wd = "https://www.zohoapis.in/workdrive/api/v1";
+hdr = {"Accept":"application/vnd.api+json","Content-Type":"application/json"};
+fileId = "kdgm34b57d1611e4b4261ab47bcf9d22525a7";
+requester = "akash.sundar@zohotest.com";
+out = Map();
+meta = invokeurl
+[
+	url :wd + "/files/" + fileId
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+at = meta.get("data").get("attributes");
+out.put("meta", {"owner":at.get("owner"),"creator":at.get("creator"),"type":at.get("type"),"capabilities":at.get("capabilities")});
+p0 = invokeurl
+[
+	url :wd + "/files/" + fileId + "/permissions"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("perms_before", p0);
+expires = zoho.currenttime.addDay(2).toString("yyyy-MM-dd HH:mm:ss");
+out.put("expiry_sent", expires);
+body = {"data":{"type":"permissions","attributes":{"resource_id":fileId,"shared_type":"personal","email_id":requester,"role_id":"34","send_notification_mail":"false","expiration_date":expires}}};
+g = invokeurl
+[
+	url :wd + "/permissions"
+	type :POST
+	parameters:body.toString()
+	headers:hdr
+	connection:"jitworkdrive"
+	detailed:true
+];
+out.put("grant", g);
+p1 = invokeurl
+[
+	url :wd + "/files/" + fileId + "/permissions"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("perms_after_grant", p1);
+// Locate the permission by email in the read-back, not from the grant response alone.
+permId = "";
+for each p in p1.get("data")
+{
+	if(p.get("attributes").get("email_id") == requester)
+	{
+		permId = p.get("id");
+	}
+}
+out.put("perm_id_from_list", permId);
+if(permId != "")
+{
+	newExp = zoho.currenttime.addDay(3).toString("yyyy-MM-dd HH:mm:ss");
+	out.put("expiry_patch_sent", newExp);
+	pb = {"data":{"type":"permissions","attributes":{"expiration_date":newExp}}};
+	u = invokeurl
+	[
+		url :wd + "/permissions/" + permId
+		type :PATCH
+		parameters:pb.toString()
+		headers:hdr
+		connection:"jitworkdrive"
+		detailed:true
+	];
+	out.put("patch", u);
+	one = invokeurl
+	[
+		url :wd + "/permissions/" + permId
+		type :GET
+		headers:hdr
+		connection:"jitworkdrive"
+	];
+	out.put("perm_after_patch", one);
+	dl = invokeurl
+	[
+		url :wd + "/permissions/" + permId
+		type :DELETE
+		headers:hdr
+		connection:"jitworkdrive"
+		detailed:true
+	];
+	out.put("delete", dl);
+}
+p2 = invokeurl
+[
+	url :wd + "/files/" + fileId + "/permissions"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("perms_after_delete", p2);
+return {"text":out.toString()};

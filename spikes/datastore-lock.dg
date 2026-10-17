@@ -1,0 +1,45 @@
+// jit-spike: can a Unique-keyed datastore act as a lock? Insert the same key twice and
+// record exactly what the second insert returns, plus query/update/field behaviour.
+out = Map();
+key = "spike:" + zoho.currenttime.toLong();
+first = zoho.cliq.createRecord("jitspike", {"lockkey":key,"n":1,"flag":true,"secret":"s3cret-value","blob":"x"}, "jitaccess");
+out.put("first", first);
+second = zoho.cliq.createRecord("jitspike", {"lockkey":key,"n":2}, "jitaccess");
+out.put("second", second);
+q = Map();
+q.put("criteria", "lockkey==" + key);
+found = zoho.cliq.getRecords("jitspike", q, "jitaccess");
+out.put("found", found);
+out.put("first_keys", first.keys());
+// The record id's location is not documented for this task; find it before using it.
+recId = ifnull(first.get("id"), "");
+if(recId == "" && first.get("object") != null)
+{
+	recId = first.get("object").get("id");
+}
+if(recId == "" && first.get("data") != null)
+{
+	recId = first.get("data").get("id");
+}
+if(recId == "")
+{
+	return {"text":"NO_ID " + out.toString()};
+}
+upd = zoho.cliq.updateRecord("jitspike", recId, {"n":5}, "jitaccess");
+out.put("update", upd);
+// Numeric range criteria, which the sweep needs for expires_at <= now.
+q2 = Map();
+q2.put("criteria", "(n>=5)&&(flag==true)");
+out.put("range", zoho.cliq.getRecords("jitspike", q2, "jitaccess"));
+// Large-text ceiling: try 1,500 characters against a documented 1,000 limit.
+long = "";
+for each i in {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+{
+	long = long + "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+}
+out.put("long_len", long.length());
+out.put("blob_1500", zoho.cliq.updateRecord("jitspike", recId, {"blob":long}, "jitaccess"));
+back = zoho.cliq.getRecordById("jitspike", recId, "jitaccess");
+out.put("readback_blob_len", back.get("object").get("blob").length());
+out.put("readback_secret", back.get("object").get("secret"));
+return {"text":out.toString()};

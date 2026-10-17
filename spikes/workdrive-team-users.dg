@@ -1,0 +1,12 @@
+// jit-spike: list WorkDrive team members, to tell which Cliq users WorkDrive treats
+// as internal (shareable) versus outside the org.
+wd = "https://www.zohoapis.in/workdrive/api/v1";
+hdr = {"Accept":"application/vnd.api+json"};
+r = invokeurl
+[
+	url :wd + "/teams/a68br548f44d053aa43f690d496174dd10943/users"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+return {"text":r.toString()};

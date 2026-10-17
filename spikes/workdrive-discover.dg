@@ -1,0 +1,49 @@
+// jit-spike: find the connection owner's WorkDrive identity, team, private space
+// (My Folders) and team folders, so test files can be created in known places.
+wd = "https://www.zohoapis.in/workdrive/api/v1";
+hdr = {"Accept":"application/vnd.api+json"};
+out = Map();
+me = invokeurl
+[
+	url :wd + "/users/me"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("me", me);
+zuid = me.get("data").get("id");
+teams = invokeurl
+[
+	url :wd + "/users/" + zuid + "/teams"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("teams", teams);
+teamId = teams.get("data").get(0).get("id");
+cu = invokeurl
+[
+	url :wd + "/teams/" + teamId + "/currentuser"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("currentuser", cu);
+teamUserId = cu.get("data").get("id");
+ps = invokeurl
+[
+	url :wd + "/users/" + teamUserId + "/privatespace"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("privatespace", ps);
+tf = invokeurl
+[
+	url :wd + "/teams/" + teamId + "/workspaces"
+	type :GET
+	headers:hdr
+	connection:"jitworkdrive"
+];
+out.put("teamfolders", tf);
+return {"text":out.toString()};

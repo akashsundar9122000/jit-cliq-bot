@@ -1,0 +1,69 @@
+// jit-spike: from a scheduler (which runs as its creator), act as the stored owner by
+// refreshing the owner's token: add Test 1 to jitsandbox, read back, remove, read back.
+// No connection is used for the channel calls, so the identity can only be the token's.
+acc = "https://accounts.zoho.in";
+base = "https://cliq.zoho.in/api/v2/channels/P1207169000000141002";
+target = "60084023939";
+out = Map();
+out.put("scheduler_user", user.get("email"));
+cl = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==client"}, "jitaccess");
+ow = zoho.cliq.getRecords("jitspikeauth", {"criteria":"kind==owner"}, "jitaccess");
+clientId = cl.get("list").get(0).get("secret");
+clientSecret = cl.get("list").get(0).get("secretb");
+rt = ow.get("list").get(0).get("secret");
+t = invokeurl
+[
+	url :acc + "/oauth/v2/token"
+	type :POST
+	parameters:{"client_id":clientId,"client_secret":clientSecret,"grant_type":"refresh_token","refresh_token":rt}
+];
+out.put("refresh_error", t.get("error"));
+auth = {"Authorization":"Zoho-oauthtoken " + t.get("access_token"),"Content-Type":"application/json"};
+ids = List();
+ids.add(target);
+b = Map();
+b.put("user_ids", ids);
+a = invokeurl
+[
+	url :base + "/members"
+	type :POST
+	parameters:b.toString()
+	headers:auth
+	detailed:true
+];
+out.put("add_code", a.get("responseCode"));
+m1 = invokeurl
+[
+	url :base + "/members"
+	type :GET
+	headers:auth
+];
+l1 = List();
+for each x in m1.get("members")
+{
+	l1.add(x.get("email_id") + ":" + x.get("user_role"));
+}
+out.put("after_add", l1);
+d = invokeurl
+[
+	url :base + "/members/" + target
+	type :DELETE
+	headers:auth
+	detailed:true
+];
+out.put("remove_code", d.get("responseCode"));
+m2 = invokeurl
+[
+	url :base + "/members"
+	type :GET
+	headers:auth
+];
+l2 = List();
+for each x in m2.get("members")
+{
+	l2.add(x.get("email_id") + ":" + x.get("user_role"));
+}
+out.put("after_remove", l2);
+// Schedulers have no caller to return to; keep the result where it can be read back.
+zoho.cliq.createRecord("jitspikeauth", {"kind":"schedresult" + zoho.currenttime.toLong(),"meta":out.toString().subString(0,min(240,out.toString().length()))}, "jitaccess");
+info out;

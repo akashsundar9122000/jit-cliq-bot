@@ -1,0 +1,57 @@
+// jit-spike: the full channel JIT cycle through the jitcliq connection, reading
+// membership back after every write rather than trusting the write's response.
+// invokeurl is a statement in Deluge, not an expression, so each call is assigned.
+base = "https://cliq.zoho.in/api/v2/channels/P1207169000000141002";
+target = "60084023939";
+out = Map();
+r1 = invokeurl
+[
+	url :base
+	type :GET
+	connection:"jitaccess"
+];
+out.put("channel", r1);
+r2 = invokeurl
+[
+	url :base + "/members"
+	type :GET
+	connection:"jitaccess"
+];
+out.put("members_before", r2);
+ids = List();
+ids.add(target);
+body = Map();
+body.put("user_ids", ids);
+r3 = invokeurl
+[
+	url :base + "/members"
+	type :POST
+	parameters:body.toString()
+	headers:{"Content-Type":"application/json"}
+	connection:"jitaccess"
+	detailed:true
+];
+out.put("add", r3);
+r4 = invokeurl
+[
+	url :base + "/members"
+	type :GET
+	connection:"jitaccess"
+];
+out.put("members_after_add", r4);
+r5 = invokeurl
+[
+	url :base + "/members/" + target
+	type :DELETE
+	connection:"jitaccess"
+	detailed:true
+];
+out.put("remove", r5);
+r6 = invokeurl
+[
+	url :base + "/members"
+	type :GET
+	connection:"jitaccess"
+];
+out.put("members_after_remove", r6);
+return {"text":out.toString()};
